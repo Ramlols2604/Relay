@@ -4459,16 +4459,26 @@
 .relay-native-auth .cl-socialButtonsRoot,
 .relay-native-auth .cl-socialButtons,
 .relay-native-auth .cl-dividerRow { display: none !important; }
-.relay-google {
+.relay-clerk-hidden { display: none !important; }
+.relay-social { display: grid; gap: 10px; margin: 0 0 12px; }
+.relay-social-button {
   width: 100%;
-  margin: 0 0 12px;
   border: 1px solid #d7e3ea;
   border-radius: 12px;
   background: #fff;
   color: #16324f;
   font: 700 15px/1.2 "Nunito", system-ui, sans-serif;
   padding: 12px 16px;
+  cursor: pointer;
 }
+.relay-social-button:disabled { opacity: 0.6; cursor: default; }
+.relay-social-apple { background: #000; border-color: #000; color: #fff; }
+.relay-social-problem { margin: 0; color: #9b2c1f; font-weight: 700; font-size: 0.9rem; }
+.relay-social-divider {
+  display: flex; align-items: center; gap: 0.75rem; margin: 4px 0 0;
+  color: #5b7184; font-size: 0.85rem; font-weight: 700;
+}
+.relay-social-divider::before, .relay-social-divider::after { content: ''; flex: 1; height: 1px; background: #d7e3ea; }
 .relay-auth-form .relay-clerk-card { box-shadow: none; border: 0; background: transparent; }
 .relay-auth-form .relay-clerk-card-body { padding: 0; background: transparent; box-shadow: none; }
 .relay-account { display: flex; align-items: center; gap: 0.8rem; margin-top: 1.5rem; font-weight: 700; }

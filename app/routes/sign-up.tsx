@@ -1,13 +1,13 @@
 import { SignUp } from '@clerk/react-router'
 import { AuthPage } from '../../src/App.tsx'
+import { SocialSignIn } from '../../src/auth/SocialSignIn.tsx'
+import { clerkAppearance } from '../../src/auth/providers.ts'
 
 export default function SignUpPage() {
   return (
     <AuthPage signUp>
-      <SignUp routing="hash" signInUrl="/sign-in" appearance={{
-        variables: { colorPrimary: '#147a4c', fontFamily: '"Nunito", system-ui, sans-serif' },
-        elements: { rootBox: 'relay-clerk-root', cardBox: 'relay-clerk-card', card: 'relay-clerk-card-body', header: 'relay-clerk-header' },
-      }} />
+      <SocialSignIn signUp />
+      <SignUp routing="hash" signInUrl="/sign-in" appearance={clerkAppearance} />
     </AuthPage>
   )
 }
