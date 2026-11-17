@@ -46,3 +46,5 @@ imessage/.env
 
 # clerk configuration (can include secrets)
 /.clerk/
+backend/flows.db
+/test-results/

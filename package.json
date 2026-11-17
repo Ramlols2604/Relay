@@ -11,6 +11,7 @@
     "test:unit": "node --experimental-strip-types --test src/api/coverage.test.ts src/data/groupBuys.test.ts src/data/gardenCount.test.ts src/data/overdue.test.ts",
     "test:spa": "node --test scripts/serve-client.test.mjs",
     "test:e2e": "playwright test",
+    "test:flows": "playwright test --config playwright.flows.config.ts",
     "preview": "node scripts/serve-client.mjs",
     "start": "node scripts/serve-client.mjs",
     "ios": "npm run build && cap sync ios && cap open ios"
