@@ -181,3 +181,27 @@ export type ApiInventory = {
   items: ApiInventoryItem[]
   resident_id?: string
 }
+
+export type ApiSharedDemandGroup = {
+  catalog_item_id: string
+  name: string
+  request_count: number
+  shared: boolean
+  reason: string | null
+  schedule: Record<string, { start: string; end: string }> | null
+  unschedulable_request_id: string | null
+  cost: {
+    demo_price_cents: number
+    households: number
+    buy_each_cents: number
+    share_one_cents: number
+    savings_cents: number
+    per_household_buy_cents: number
+    per_household_share_cents: number
+  } | null
+}
+
+export type ApiSharedDemand = {
+  snowflake: string
+  groups: ApiSharedDemandGroup[]
+}

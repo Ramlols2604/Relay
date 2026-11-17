@@ -7,6 +7,7 @@ import type {
   ApiLoan,
   ApiProject,
   ApiResident,
+  ApiSharedDemand,
 } from './types.ts'
 
 export const apiBase = (import.meta.env.VITE_API_URL || 'http://127.0.0.1:8000').replace(/\/+$/, '')
@@ -59,6 +60,11 @@ export const api = {
     request<ApiInventory>(`/api/neighborhood?resident_id=${encodeURIComponent(residentId)}`),
   catalog: () => request<ApiCatalogItem[]>('/api/catalog'),
   activity: () => request<ApiActivity>('/api/activity'),
+  sharedDemand: () => request<ApiSharedDemand>('/api/shared-demand'),
+  startGroupBuy: (catalogItemId: string) =>
+    post<{ catalog_item_id: string; started: boolean; mock: boolean }>(
+      `/api/shared-demand/${encodeURIComponent(catalogItemId)}/group-buy`,
+    ),
   garden: () => request<{ count: number }>('/api/garden'),
 
   addTool: (projectId: string, catalogItemId: string, optional = false) =>

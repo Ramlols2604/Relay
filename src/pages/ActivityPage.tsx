@@ -21,6 +21,7 @@ import {
   loanStatusSteps,
   type LoanRequest,
 } from '../data/lending.ts'
+import { SharedDemandCard } from '../components/SharedDemandCard.tsx'
 import { useHandoffs } from '../state/handoffStore.ts'
 import { useLoanRequests } from '../state/loanStore.ts'
 
@@ -100,6 +101,8 @@ export function ActivityPage() {
           />
         </div>
       </GlassCard>
+
+      <SharedDemandCard />
 
       {items.length === 0 ? (
         <GlassCard tone="glass" className="activity-empty">
