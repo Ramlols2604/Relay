@@ -4553,3 +4553,38 @@
   background: #fff4d6;
   color: #7a5200;
 }
+
+.admin-page { display: grid; gap: 1rem; }
+.admin-tabs { display: flex; gap: 0.5rem; overflow-x: auto; padding-bottom: 0.25rem; }
+.admin-tab {
+  flex: none; border: 1px solid #d7e3ea; border-radius: 999px; background: #fff; color: #16324f;
+  font: 700 0.9rem/1 "Nunito", system-ui, sans-serif; padding: 0.6rem 0.9rem; cursor: pointer;
+}
+.admin-tab-active { background: #147a4c; border-color: #147a4c; color: #fff; }
+.admin-panel { display: grid; gap: 0.75rem; }
+.admin-h3 { margin: 0.5rem 0 0; font-size: 1rem; }
+.admin-stats { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(8.5rem, 1fr)); gap: 0.6rem; }
+.admin-stats li { display: grid; gap: 0.1rem; padding: 0.7rem; border-radius: 0.8rem; background: rgba(255, 255, 255, 0.7); }
+.admin-stat-value { font-size: 1.5rem; font-weight: 800; }
+.admin-stat-label { font-size: 0.8rem; font-weight: 700; text-transform: capitalize; color: #5b7184; }
+.admin-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 0.5rem; }
+.admin-row { display: flex; flex-wrap: wrap; align-items: center; gap: 0.6rem; padding: 0.7rem; border-radius: 0.8rem; background: rgba(255, 255, 255, 0.7); }
+.admin-row .hint { display: block; }
+.admin-grow { flex: 1 1 12rem; min-width: 0; overflow-wrap: anywhere; }
+.admin-editor { align-items: end; }
+.admin-field { display: grid; gap: 0.25rem; font-weight: 700; font-size: 0.85rem; }
+.admin-field input, .admin-field select, .admin-field textarea {
+  font: inherit; padding: 0.55rem 0.7rem; border: 1px solid #d7e3ea; border-radius: 0.6rem; background: #fff; min-width: 0;
+}
+.admin-actions { display: flex; gap: 0.5rem; }
+.admin-button {
+  border: 1px solid #147a4c; border-radius: 0.7rem; background: #fff; color: #147a4c;
+  font: 700 0.85rem/1 "Nunito", system-ui, sans-serif; padding: 0.55rem 0.8rem; cursor: pointer;
+}
+.admin-button:disabled { opacity: 0.5; cursor: default; }
+.admin-danger { border-color: #c0392b; color: #9b2c1f; }
+.admin-error { margin: 0; padding: 0.5rem 0.7rem; border-radius: 0.6rem; background: #fde8e6; color: #9b2c1f; font-weight: 700; font-size: 0.9rem; }
+.admin-pill { border-radius: 999px; padding: 0.25rem 0.6rem; font-size: 0.75rem; font-weight: 800; }
+.admin-pill-ok { background: #d9f5e3; color: #146c3a; }
+.admin-pill-missing { background: #fff4d6; color: #7a5200; }
+.admin-pill-error { background: #fde8e6; color: #9b2c1f; }

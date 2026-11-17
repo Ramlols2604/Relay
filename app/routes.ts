@@ -10,6 +10,7 @@ export default [
     route('my-stuff', 'routes/MyStuffPage.tsx'),
     route('neighborhood', 'routes/NeighborhoodPage.tsx'),
     route('activity', 'routes/ActivityPage.tsx'),
+    route('admin', 'routes/AdminPage.tsx'),
     route('*', 'routes/NotFoundPage.tsx'),
   ]),
 ] satisfies RouteConfig

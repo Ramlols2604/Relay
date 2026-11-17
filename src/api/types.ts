@@ -227,3 +227,49 @@ export type ApiSharedDemand = {
   groups: ApiSharedDemandGroup[]
   group_buys: ApiGroupBuy[]
 }
+
+export type AdminOverview = {
+  counts: Record<
+    | 'residents'
+    | 'shelf_items'
+    | 'catalog_items'
+    | 'loans'
+    | 'overdue_loans'
+    | 'requests'
+    | 'handoffs'
+    | 'group_buys'
+    | 'exchanges_finished',
+    number
+  >
+  loans_by_status: Record<string, number>
+  requests_by_status: Record<string, number>
+  handoffs_by_status: Record<string, number>
+  integrations: {
+    snowflake: { snowflake: 'ok' | 'error' | 'not_configured'; snowflake_message?: string }
+    gemini: boolean
+    backboard: boolean
+    clerk: boolean
+    admins_configured: number
+    auth_enforced: boolean
+  }
+}
+
+export type AdminResident = { id: string; name: string; street: string; city: string; about: string; loans: number }
+
+export type AdminCatalogItem = {
+  id: string
+  name: string
+  category: string
+  demo_price_cents: number
+  default_loan_hours: number
+}
+
+export type AdminAuditEntry = {
+  id: string
+  at: string
+  actor: string
+  action: string
+  target_type: string
+  target_id: string
+  detail: Record<string, unknown>
+}

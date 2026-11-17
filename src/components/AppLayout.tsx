@@ -1,8 +1,9 @@
-import { Bell, Map, MessageCircle, Package, type LucideIcon } from 'lucide-react'
+import { Bell, Map, MessageCircle, Package, ShieldCheck, type LucideIcon } from 'lucide-react'
 import { Link, NavLink, Outlet } from 'react-router'
 import { UserButton } from '@clerk/react-router'
 import { demoCommunityLabel } from '../data/index.ts'
 import { sphereClass, type SectionSphere } from '../data/sectionSpheres.ts'
+import { useIsAdmin } from '../state/adminAccess.ts'
 import { useCurrentResident } from '../state/currentResident.ts'
 import { Atmosphere } from './Atmosphere.tsx'
 
@@ -115,6 +116,10 @@ function Wordmark({ compact = false }: { compact?: boolean }) {
 }
 
 function PrimaryNav({ layout }: { layout: 'side' | 'dock' }) {
+  const isAdmin = useIsAdmin()
+  const shown = isAdmin
+    ? [...links, { to: '/admin', label: 'Admin', icon: ShieldCheck, sphere: 'sky' as SectionSphere, end: false }]
+    : links
   return (
     <nav
       aria-label="Primary"
@@ -123,7 +128,7 @@ function PrimaryNav({ layout }: { layout: 'side' | 'dock' }) {
       }
     >
       {layout === 'dock' ? <ShellAero idPrefix="mobile-dock" /> : null}
-      {links.map(({ to, label, icon: Icon, sphere, end }) => (
+      {shown.map(({ to, label, icon: Icon, sphere, end }) => (
         <NavLink
           key={to}
           to={to}

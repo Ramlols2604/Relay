@@ -1,6 +1,12 @@
 import type {
+  AdminAuditEntry,
+  AdminCatalogItem,
+  AdminOverview,
+  AdminResident,
   ApiActivity,
   ApiCatalogItem,
+  ApiGroupBuy,
+  ApiRequest,
   ApiChatCard,
   ApiHandoff,
   ApiInventory,
@@ -153,6 +159,33 @@ export const api = {
   confirmHandoff: (handoffId: string, resident: string) =>
     post<HandoffCard>(`/api/handoffs/${handoffId}/confirm`, { resident_id: resident }),
   receiveHandoff: (handoffId: string) => post<HandoffCard>(`/api/handoffs/${handoffId}/received`),
+}
+
+const del = <T>(path: string) => request<T>(path, { method: 'DELETE' })
+const patch = <T>(path: string, body: unknown) => request<T>(path, { method: 'PATCH', body: JSON.stringify(body) })
+const enc = encodeURIComponent
+
+/** Admin API. Every call is checked on the server, so hiding the page is only a convenience. */
+export const admin = {
+  me: () => request<{ admin: true; actor: string }>('/api/admin/me'),
+  overview: () => request<AdminOverview>('/api/admin/overview'),
+  residents: (q = '') => request<AdminResident[]>(`/api/admin/residents?q=${enc(q)}`),
+  updateResident: (id: string, body: Partial<Pick<AdminResident, 'name' | 'street' | 'city' | 'about'>>) =>
+    patch<AdminResident>(`/api/admin/residents/${enc(id)}`, body),
+  deleteResident: (id: string) => del<{ deleted: string }>(`/api/admin/residents/${enc(id)}`),
+  loans: (status?: string) => request<ApiLoan[]>(`/api/admin/loans${status ? `?status=${enc(status)}` : ''}`),
+  cancelLoan: (id: string) => post<ApiLoan>(`/api/admin/loans/${enc(id)}/cancel`),
+  forceReturnLoan: (id: string) => post<ApiLoan>(`/api/admin/loans/${enc(id)}/force-return`),
+  requests: () => request<ApiRequest[]>('/api/admin/requests'),
+  closeRequest: (id: string) => post<{ id: string; status: string }>(`/api/admin/requests/${enc(id)}/close`),
+  groupBuys: () => request<ApiGroupBuy[]>('/api/admin/group-buys'),
+  closeGroupBuy: (itemId: string) => del<{ closed: string }>(`/api/admin/group-buys/${enc(itemId)}`),
+  catalog: () => request<AdminCatalogItem[]>('/api/admin/catalog'),
+  updateCatalog: (
+    id: string,
+    body: Partial<Pick<AdminCatalogItem, 'name' | 'demo_price_cents' | 'default_loan_hours'>>,
+  ) => patch<AdminCatalogItem>(`/api/admin/catalog/${enc(id)}`, body),
+  audit: (limit = 100) => request<AdminAuditEntry[]>(`/api/admin/audit?limit=${limit}`),
 }
 
 function errorMessage(status: number, detail: unknown) {
