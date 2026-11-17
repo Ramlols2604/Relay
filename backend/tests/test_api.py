@@ -1191,3 +1191,18 @@ def test_group_buy_join_leave_and_split(client):
     assert client.delete("/api/shared-demand/drill/group-buy/join", params={"resident_id": "jordan"}).status_code == 200
     assert [m["resident_id"] for m in group()["members"]] == ["avery"]
     assert group()["member_share_cents"] == 6000
+
+
+def test_started_group_buy_outlives_its_open_demand(client):
+    assert client.get("/api/shared-demand").json()["group_buys"] == []
+    client.post("/api/shared-demand/drill/group-buy", json={"resident_id": "avery"})
+    data = client.get("/api/shared-demand").json()
+    assert data["groups"] == []
+    assert data["group_buys"] == [
+        {
+            "catalog_item_id": "drill",
+            "name": "Drill",
+            "members": [{"resident_id": "avery", "name": data["group_buys"][0]["members"][0]["name"], "initials": data["group_buys"][0]["members"][0]["initials"]}],
+            "member_share_cents": 6000,
+        }
+    ]

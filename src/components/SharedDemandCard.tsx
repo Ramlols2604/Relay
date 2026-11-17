@@ -2,6 +2,7 @@ import { useEffect, useId, useState } from 'react'
 import { Users } from 'lucide-react'
 import { api } from '../api/client.ts'
 import type { ApiSharedDemand, ApiSharedDemandGroup } from '../api/types.ts'
+import { isMember, orphanGroupBuys } from '../data/groupBuys.ts'
 import { useShelfResident } from '../state/shelfResidentStore.ts'
 import { GlassCard } from './GlassCard.tsx'
 
@@ -53,7 +54,8 @@ export function SharedDemandCard() {
   }
 
   const groups = demand?.groups ?? []
-  if (!error && groups.length === 0) return null
+  const orphans = orphanGroupBuys(demand)
+  if (!error && groups.length === 0 && orphans.length === 0) return null
 
   return (
     <GlassCard tone="glass" className="shared-demand" aria-labelledby={headingId}>
@@ -118,6 +120,18 @@ export function SharedDemandCard() {
             </li>
           )
         })}
+        {orphans.map((buy) => (
+          <li key={buy.catalog_item_id} className="exchange-part">
+            <p className="match-person-name">{buy.name} · group buy</p>
+            <GroupBuyMembers
+              group={buy}
+              me={me}
+              busy={busy !== null}
+              onJoin={() => void run(buy.catalog_item_id, () => api.joinGroupBuy(buy.catalog_item_id, me), 'Could not join the group buy.')}
+              onLeave={() => void run(buy.catalog_item_id, () => api.leaveGroupBuy(buy.catalog_item_id, me), 'Could not leave the group buy.')}
+            />
+          </li>
+        ))}
       </ul>
     </GlassCard>
   )
@@ -130,13 +144,13 @@ function GroupBuyMembers({
   onJoin,
   onLeave,
 }: {
-  group: ApiSharedDemandGroup
+  group: Pick<ApiSharedDemandGroup, 'members' | 'member_share_cents'>
   me: string
   busy: boolean
   onJoin: () => void
   onLeave: () => void
 }) {
-  const joined = group.members.some((member) => member.resident_id === me)
+  const joined = isMember(group.members, me)
   return (
     <>
       <p className="activity-success" role="status">

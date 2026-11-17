@@ -211,7 +211,15 @@ export type ApiSharedDemandGroup = {
   } | null
 }
 
+export type ApiGroupBuy = {
+  catalog_item_id: string
+  name: string
+  members: ApiGroupBuyMember[]
+  member_share_cents: number | null
+}
+
 export type ApiSharedDemand = {
   snowflake: string
   groups: ApiSharedDemandGroup[]
+  group_buys: ApiGroupBuy[]
 }

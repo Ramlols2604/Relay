@@ -420,7 +420,19 @@ def shared_demand(session: Session) -> dict:
             "requests": [_public_request(row) for row in requests],
         }
         results.append(entry)
-    return {"snowflake": snowflake, "groups": results}
+    group_buys = []
+    for item_id in sorted(started_items):
+        item = catalog.get(item_id)
+        members = members_by_item.get(item_id, [])
+        group_buys.append(
+            {
+                "catalog_item_id": item_id,
+                "name": item.name if item else item_id,
+                "members": members,
+                "member_share_cents": item.demo_price_cents // len(members) if item and members else None,
+            }
+        )
+    return {"snowflake": snowflake, "groups": results, "group_buys": group_buys}
 
 
 def start_group_buy(session: Session, catalog_item_id: str, resident_id: str | None = None) -> dict:
