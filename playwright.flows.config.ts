@@ -42,7 +42,11 @@ export default defineConfig({
         ...devices['Desktop Chrome'],
         viewport: { width: 420, height: 1000 },
         // Set when the Playwright-managed browser is not installed, e.g. in a sandbox.
-        launchOptions: { executablePath: process.env.PLAYWRIGHT_CHROMIUM_PATH || undefined },
+        launchOptions: {
+          executablePath: process.env.PLAYWRIGHT_CHROMIUM_PATH || undefined,
+          // The 3D town needs WebGL, which CI machines without a GPU get from software rendering.
+          args: ['--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist'],
+        },
       },
     },
   ],

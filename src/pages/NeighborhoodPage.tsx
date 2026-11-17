@@ -1,4 +1,4 @@
-import { useEffect, useId, useMemo, useRef, useState } from 'react'
+import { Suspense, lazy, useEffect, useId, useMemo, useRef, useState } from 'react'
 import { Map, X } from 'lucide-react'
 import { GlassCard } from '../components/GlassCard.tsx'
 import { NeighborhoodMap } from '../components/NeighborhoodMap.tsx'
@@ -16,7 +16,10 @@ import { useShelfResident } from '../state/shelfResidentStore.ts'
 import { api } from '../api/client.ts'
 import type { ApiInventoryItem } from '../api/types.ts'
 
+const RelayWorld = lazy(() => import('../components/RelayWorld.tsx').then((module) => ({ default: module.RelayWorld })))
+
 type MapFilter = 'all' | 'lending' | 'loans'
+type HoodView = 'map' | '3d'
 
 export function NeighborhoodPage() {
   const headingId = useId()
@@ -29,6 +32,7 @@ export function NeighborhoodPage() {
   const [selectedLinkId, setSelectedLinkId] = useState<string | null>(null)
   const [filter, setFilter] = useState<MapFilter>('all')
   const [query, setQuery] = useState('')
+  const [view, setView] = useState<HoodView>('map')
 
   useEffect(() => {
     let cancel = false
@@ -198,7 +202,25 @@ export function NeighborhoodPage() {
           </FilterButton>
         </div>
 
-        <div className="hood-layout">
+        <div className="hood-view-switch" role="group" aria-label="Neighborhood view">
+          {(['map', '3d'] as const).map((id) => (
+            <button
+              key={id}
+              type="button"
+              className={view === id ? 'admin-tab admin-tab-active' : 'admin-tab'}
+              aria-pressed={view === id}
+              onClick={() => setView(id)}
+            >
+              {id === 'map' ? 'Map' : '3D world'}
+            </button>
+          ))}
+        </div>
+        {view === '3d' ? (
+          <Suspense fallback={<p className="hint">Building the neighborhood…</p>}>
+            <RelayWorld />
+          </Suspense>
+        ) : null}
+        <div className="hood-layout" hidden={view === '3d'}>
           <div className="hood-map-column">
             <NeighborhoodMap
               residents={visibleResidents}

@@ -25,20 +25,8 @@ export async function post(request: APIRequestContext, url: string, data?: unkno
 
 /** A confirmed loan of `item` from `lender` to `borrower`, due two days from now. */
 export async function confirmedLoan(request: APIRequestContext, item: string, lender: string, borrower: string) {
-  const shelf = await post(
-    request,
-    '/api/inventory',
-    {
-      resident_id: lender,
-      name: item[0].toUpperCase() + item.slice(1),
-      category: 'Tools',
-      quantity: 1,
-      condition: 'Good',
-      notes: '',
-      available_to_lend: true,
-    },
-    201,
-  )
+  const name = item[0].toUpperCase() + item.slice(1)
+  const shelf = await shelfItem(request, lender, name)
   const loan = await post(
     request,
     '/api/loans',
@@ -56,3 +44,18 @@ export async function confirmedLoan(request: APIRequestContext, item: string, le
   return loan.loan_id as string
 }
 
+
+/** The lender's shelf entry for `name`, created if it is not there yet (so a retried test does not fail). */
+async function shelfItem(request: APIRequestContext, lender: string, name: string) {
+  const created = await request.post(`${api}/api/inventory`, {
+    data: { resident_id: lender, name, category: 'Tools', quantity: 1, condition: 'Good', notes: '', available_to_lend: true },
+  })
+  if (created.status() === 201) return (await created.json()) as { inventory_id: string }
+  expect(created.status(), await created.text()).toBe(409)
+  const listed = (await (await request.get(`${api}/api/inventory?resident_id=${lender}`)).json()) as {
+    items: { inventory_id: string; catalog_item: string; resident_id: string }[]
+  }
+  const found = listed.items.find((row) => row.resident_id === lender && row.catalog_item.toLowerCase() === name.toLowerCase())
+  expect(found, `${lender} should already have ${name}`).toBeTruthy()
+  return { inventory_id: found!.inventory_id }
+}

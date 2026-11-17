@@ -8,7 +8,7 @@
     "dev:lan": "react-router dev --host",
     "build": "react-router typegen && tsc -b && react-router build",
     "lint": "eslint .",
-    "test:unit": "node --experimental-strip-types --test src/api/coverage.test.ts src/data/groupBuys.test.ts src/data/gardenCount.test.ts src/data/overdue.test.ts src/auth/providers.test.ts src/data/admin.test.ts",
+    "test:unit": "node --experimental-strip-types --test src/api/coverage.test.ts src/data/groupBuys.test.ts src/data/gardenCount.test.ts src/data/overdue.test.ts src/auth/providers.test.ts src/data/admin.test.ts src/world/world.test.ts",
     "test:spa": "node --test scripts/serve-client.test.mjs",
     "test:e2e": "playwright test",
     "test:flows": "playwright test --config playwright.flows.config.ts",
@@ -32,7 +32,8 @@
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
     "react-router": "^7.18.4",
-    "tailwindcss": "^4.3.3"
+    "tailwindcss": "^4.3.3",
+    "three": "^0.170.0"
   },
   "devDependencies": {
     "@clerk/testing": "^2.2.45",
@@ -42,6 +43,7 @@
     "@types/node": "^24.13.3",
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.7",
+    "@types/three": "^0.170.0",
     "@vitejs/plugin-react": "^6.1.1",
     "eslint": "^10.10.0",
     "eslint-plugin-react-hooks": "^7.1.1",
