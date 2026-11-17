@@ -382,6 +382,7 @@ def shared_demand(session: Session) -> dict:
             continue
         groups.setdefault(request["catalog_item_id"], []).append(request)
     snowflake = inventory["snowflake"]
+    started_items = {row.catalog_item_id for row in session.exec(select(GroupBuy)).all()}
     results = []
     for item_id, requests in groups.items():
         if len(requests) < 2:
@@ -406,6 +407,7 @@ def shared_demand(session: Session) -> dict:
             "reason": reason,
             "schedule": schedule,
             "unschedulable_request_id": blocked,
+            "group_buy_started": item_id in started_items,
             "cost": _cost(item, len(requests)) if shared and item else None,
             "requests": [_public_request(row) for row in requests],
         }

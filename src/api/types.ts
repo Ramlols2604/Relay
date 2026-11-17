@@ -195,6 +195,7 @@ export type ApiSharedDemandGroup = {
   reason: string | null
   schedule: Record<string, { start: string; end: string }> | null
   unschedulable_request_id: string | null
+  group_buy_started: boolean
   cost: {
     demo_price_cents: number
     households: number

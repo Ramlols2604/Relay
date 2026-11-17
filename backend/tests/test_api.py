@@ -7,7 +7,7 @@ from app.catalog import BOOKSHELF_TOOLS
 from tests.frozen_clock import frozen_now as utcnow
 from app.db import session_scope
 from app.extract import Extraction, _extraction_from_payload
-from app.models import CatalogItem
+from app.models import CatalogItem, GroupBuy
 
 
 def _say(client, resident_id, message):
@@ -216,6 +216,15 @@ def test_shared_drill_demand_waits_for_inventory(client):
 
     started = client.post("/api/shared-demand/drill/group-buy")
     assert started.json() == {"catalog_item_id": "drill", "started": True, "mock": True}
+    assert demand["groups"][0]["group_buy_started"] is False
+    for _ in range(3):
+        assert client.post("/api/shared-demand/drill/group-buy").status_code == 200
+    after = client.get("/api/shared-demand").json()["groups"][0]
+    assert after["group_buy_started"] is True
+    with session_scope() as session:
+        assert len(session.exec(select(GroupBuy)).all()) == 1
+    for bad in ("nope", "DRILL", "a%2Fb"):
+        assert client.post(f"/api/shared-demand/{bad}/group-buy").status_code == 404
 
 
 def test_shelf_writes_stay_with_the_owner(client):

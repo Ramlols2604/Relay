@@ -4,37 +4,45 @@ import { api } from '../api/client.ts'
 import type { ApiSharedDemand, ApiSharedDemandGroup } from '../api/types.ts'
 import { GlassCard } from './GlassCard.tsx'
 
+const refreshMs = 10_000
+
 const dollars = (cents: number) => `$${(cents / 100).toFixed(2)}`
 
 /** Items several neighbors are asking for, with a mock "group buy" action. */
 export function SharedDemandCard() {
   const headingId = useId()
   const [demand, setDemand] = useState<ApiSharedDemand | null>(null)
-  const [started, setStarted] = useState<Set<string>>(new Set())
+  const [version, setVersion] = useState(0)
   const [busy, setBusy] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
     let live = true
-    api
-      .sharedDemand()
-      .then((next) => {
-        if (live) setDemand(next)
-      })
-      .catch((caught: unknown) => {
-        if (live) setError(caught instanceof Error ? caught.message : 'Could not load shared demand.')
-      })
+    const load = () =>
+      api
+        .sharedDemand()
+        .then((next) => {
+          if (!live) return
+          setDemand(next)
+          setError(null)
+        })
+        .catch((caught: unknown) => {
+          if (live) setError(caught instanceof Error ? caught.message : 'Could not load shared demand.')
+        })
+    void load()
+    const timer = window.setInterval(() => void load(), refreshMs)
     return () => {
       live = false
+      window.clearInterval(timer)
     }
-  }, [])
+  }, [version])
 
   const start = async (group: ApiSharedDemandGroup) => {
+    if (busy) return
     setBusy(group.catalog_item_id)
     try {
       await api.startGroupBuy(group.catalog_item_id)
-      setStarted((prev) => new Set(prev).add(group.catalog_item_id))
-      setError(null)
+      setVersion((current) => current + 1)
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : 'Could not start the group buy.')
     } finally {
@@ -60,7 +68,7 @@ export function SharedDemandCard() {
       ) : null}
       <ul className="match-list">
         {groups.map((group) => {
-          const done = started.has(group.catalog_item_id)
+          const done = group.group_buy_started
           return (
             <li key={group.catalog_item_id} className="exchange-part">
               <p className="match-person-name">
@@ -81,7 +89,7 @@ export function SharedDemandCard() {
                     <button
                       type="button"
                       className="loan-lender"
-                      disabled={busy === group.catalog_item_id}
+                      disabled={busy !== null}
                       onClick={() => void start(group)}
                     >
                       Start a group buy
