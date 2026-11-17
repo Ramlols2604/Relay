@@ -21,6 +21,7 @@ import {
   loanStatusSteps,
   type LoanRequest,
 } from '../data/lending.ts'
+import { overdueCount, overdueNotice } from '../data/overdue.ts'
 import { GardenTile } from '../components/GardenTile.tsx'
 import { SharedDemandCard } from '../components/SharedDemandCard.tsx'
 import { useHandoffs } from '../state/handoffStore.ts'
@@ -52,13 +53,15 @@ export function ActivityPage() {
       })),
     ]
 
-    return rows.filter((item) => {
+    const late = (item: ActivityItem) => (item.kind === 'loan' && item.record.overdue ? 0 : 1)
+    return rows.sort((a, b) => late(a) - late(b)).filter((item) => {
       const complete =
         item.kind === 'loan' ? isLoanComplete(item.record.status) : isHandoffComplete(item.record.status)
       return filter === 'completed' ? complete : !complete
     })
   }, [loans, handoffs, filter])
 
+  const lateCount = overdueCount(loans)
   const activeCount =
     loans.filter((loan) => !isLoanComplete(loan.status)).length +
     handoffs.filter((handoff) => !isHandoffComplete(handoff.status)).length
@@ -86,6 +89,7 @@ export function ActivityPage() {
         </p>
         <p className="hint">
           {activeCount} active · {completedCount} completed
+          {lateCount > 0 ? ` · ${lateCount} overdue` : ''}
         </p>
         <GardenTile />
         <div className="activity-filters" role="group" aria-label="Filter activities">
@@ -175,6 +179,7 @@ function LoanActivityCard({ loan, onAdvance }: { loan: LoanRequest; onAdvance: (
   const complete = isLoanComplete(loan.status)
   const lending = isResidentLending(loan)
   const action = loanActionLabel(loan)
+  const notice = overdueNotice(loan, lending)
   const Icon = complete || loan.status === 'Confirmed' || loan.status === 'Picked up' ? Check : Clock
   const counterpartName = lending ? (loan.borrowerName ?? 'Neighbor') : loan.lenderName
   const counterpartInitials = lending
@@ -195,7 +200,11 @@ function LoanActivityCard({ loan, onAdvance }: { loan: LoanRequest; onAdvance: (
             <h2 id={titleId} className="match-title">
               {loan.itemName}
             </h2>
-            <StatusBadge status={loan.status} tone={statusTone('loan', loan.status)} />
+            {loan.overdue ? (
+              <StatusBadge status="Overdue" tone="late" />
+            ) : (
+              <StatusBadge status={loan.status} tone={statusTone('loan', loan.status)} />
+            )}
           </div>
           <div className="match-person">
             <span className="match-avatar" aria-hidden="true">
@@ -236,6 +245,11 @@ function LoanActivityCard({ loan, onAdvance }: { loan: LoanRequest; onAdvance: (
         </div>
         <StatusTimeline steps={loanStatusSteps} current={loan.status} />
         <p className="loan-state-copy">{loanStatusCopy(loan)}</p>
+        {notice ? (
+          <p className={loan.overdue ? 'loan-overdue' : 'loan-due-soon'} role={loan.overdue ? 'alert' : 'status'}>
+            {notice}
+          </p>
+        ) : null}
         {action ? (
           <>
             <button

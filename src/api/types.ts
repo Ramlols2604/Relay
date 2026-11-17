@@ -108,6 +108,10 @@ export type ApiLoan = {
   window: ApiWindow
   status: ApiLoanStatus
   quantity: number
+  /** Derived by the API. Missing on older servers. */
+  overdue?: boolean
+  overdue_minutes?: number | null
+  due_soon?: boolean
 }
 
 export type ApiHandoffStatus = 'proposed' | 'confirmed' | 'received' | 'declined'

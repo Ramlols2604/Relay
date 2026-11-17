@@ -42,7 +42,7 @@ export function StatusBadge({
   tone,
 }: {
   status: string
-  tone: 'pending' | 'active' | 'done'
+  tone: 'pending' | 'active' | 'done' | 'late'
 }) {
   return <span className={`status-badge status-badge-${tone}`}>{status}</span>
 }

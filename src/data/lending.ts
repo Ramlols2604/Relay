@@ -100,6 +100,11 @@ export type LoanRequest = {
   returnWindowId: string
   returnLabel: string
   status: LoanStatus
+  /** Picked up and past its return time. */
+  overdue?: boolean
+  overdueMinutes?: number
+  /** Picked up and due back within two hours. */
+  dueSoon?: boolean
   /** Set when Avery is lending from My Inventory. */
   inventoryItemId?: string
   borrowerId?: string

@@ -1206,3 +1206,72 @@ def test_started_group_buy_outlives_its_open_demand(client):
             "member_share_cents": 6000,
         }
     ]
+
+
+def _loan_with_window(client, start, end):
+    offered = client.post(
+        "/api/inventory",
+        json={
+            "resident_id": "jordan",
+            "name": "Drill",
+            "category": "Tools",
+            "quantity": 1,
+            "condition": "Good",
+            "notes": "",
+            "available_to_lend": True,
+        },
+    )
+    loan = client.post(
+        "/api/loans",
+        json={
+            "borrower_id": "avery",
+            "lender_id": "jordan",
+            "catalog_item_id": "drill",
+            "inventory_id": offered.json()["inventory_id"],
+            "window_start": start,
+            "window_end": end,
+        },
+    )
+    assert loan.status_code == 201, loan.text
+    loan_id = loan.json()["loan_id"]
+    client.post(f"/api/loans/{loan_id}/respond", json={"action": "accept"})
+    return loan_id
+
+
+def _set_loan_end(loan_id, end):
+    from app.models import Loan
+
+    with session_scope() as session:
+        row = session.get(Loan, loan_id)
+        row.window_end = end
+        session.add(row)
+        session.commit()
+
+
+def _loan_row(client, loan_id):
+    return next(row for row in client.get("/api/activity").json()["loans"] if row["loan_id"] == loan_id)
+
+
+def test_loan_overdue_and_due_soon_flags(client):
+    from datetime import timedelta
+
+    from tests.frozen_clock import FROZEN_NOW
+
+    loan_id = _loan_with_window(client, "2026-10-17T09:00:00", "2026-10-17T11:00:00")
+    # Not picked up yet: never overdue, even if the window were past.
+    assert _loan_row(client, loan_id)["overdue"] is False
+    client.post(f"/api/loans/{loan_id}/pickup")
+    far = _loan_row(client, loan_id)
+    assert (far["overdue"], far["overdue_minutes"], far["due_soon"]) == (False, None, False)
+
+    _set_loan_end(loan_id, (FROZEN_NOW + timedelta(minutes=90)))
+    soon = _loan_row(client, loan_id)
+    assert (soon["overdue"], soon["due_soon"]) == (False, True)
+
+    _set_loan_end(loan_id, (FROZEN_NOW - timedelta(minutes=185)))
+    late = _loan_row(client, loan_id)
+    assert (late["overdue"], late["overdue_minutes"], late["due_soon"]) == (True, 185, False)
+    assert late["status"] == "picked_up"
+
+    returned = client.post(f"/api/loans/{loan_id}/return").json()
+    assert (returned["overdue"], returned["overdue_minutes"], returned["due_soon"]) == (False, None, False)

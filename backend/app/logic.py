@@ -1670,8 +1670,23 @@ def _handoff_dict(session: Session, handoff: Handoff) -> dict:
     }
 
 
+DUE_SOON = timedelta(hours=2)
+
+
+def _loan_timing(loan: Loan) -> dict:
+    """Overdue and due-soon flags, derived from the clock. Only loans out with the borrower count."""
+    if loan.status != "picked_up":
+        return {"overdue": False, "overdue_minutes": None, "due_soon": False}
+    end = aware(loan.window_end)
+    left = end - now()
+    if left < timedelta(0):
+        return {"overdue": True, "overdue_minutes": int(-left.total_seconds() // 60), "due_soon": False}
+    return {"overdue": False, "overdue_minutes": None, "due_soon": left <= DUE_SOON}
+
+
 def _loan_dict(loan: Loan) -> dict:
     return {
+        **_loan_timing(loan),
         "loan_id": loan.id,
         "lender_id": loan.lender_id,
         "borrower_id": loan.borrower_id,

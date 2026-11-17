@@ -188,6 +188,11 @@ export function loanFromApi(loan: ApiLoan, directory: Directory, viewerId: strin
     returnWindowId: `${loan.loan_id}-return`,
     returnLabel: end ? formatMoment(end) : 'the agreed time',
     status,
+    ...(loan.overdue
+      ? { overdue: true, overdueMinutes: Math.max(0, loan.overdue_minutes ?? 0) }
+      : loan.due_soon
+        ? { dueSoon: true }
+        : {}),
     ...(averyLends
       ? {
           borrowerId: loan.borrower_id,

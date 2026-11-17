@@ -4518,3 +4518,28 @@
 .garden-tile-value {
   font-weight: 800;
 }
+
+.status-badge-late {
+  background: #fde8e6;
+  color: #9b2c1f;
+  border-color: #f4b8b1;
+}
+
+.loan-overdue,
+.loan-due-soon {
+  margin: 0.5rem 0 0;
+  padding: 0.55rem 0.75rem;
+  border-radius: 0.75rem;
+  font-size: 0.9rem;
+  font-weight: 700;
+}
+
+.loan-overdue {
+  background: #fde8e6;
+  color: #9b2c1f;
+}
+
+.loan-due-soon {
+  background: #fff4d6;
+  color: #7a5200;
+}
