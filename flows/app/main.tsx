@@ -1,5 +1,7 @@
 import { createRoot } from 'react-dom/client'
+import { BrowserRouter } from 'react-router'
 import '../../src/styles/index.css'
+import { AdminPage } from '../../src/pages/AdminPage.tsx'
 import { ActivityPage } from '../../src/pages/ActivityPage.tsx'
 import { ActivityFeedProvider } from '../../src/state/activityFeed.tsx'
 import { HandoffsProvider } from '../../src/state/handoffs.tsx'
@@ -12,7 +14,13 @@ createRoot(document.getElementById('root')!).render(
     <ActivityFeedProvider>
       <LoanRequestsProvider>
         <HandoffsProvider>
-          <ActivityPage />
+          {location.pathname.startsWith('/admin') ? (
+            <BrowserRouter>
+              <AdminPage />
+            </BrowserRouter>
+          ) : (
+            <ActivityPage />
+          )}
         </HandoffsProvider>
       </LoanRequestsProvider>
     </ActivityFeedProvider>
