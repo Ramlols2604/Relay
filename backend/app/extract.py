@@ -10,7 +10,14 @@ from time import monotonic
 from app.clock import aware, now as utcnow
 
 from app.catalog import BOOKSHELF_TOOLS, is_bookshelf, match_catalog, mentioned_items
-from app.config import backboard_api_key, backboard_model, gemini_api_key, gemini_model
+from app.config import (
+    backboard_api_key,
+    backboard_model,
+    gemini_api_key,
+    gemini_model,
+    ollama_host,
+    ollama_model,
+)
 from app.models import CatalogItem
 
 log = logging.getLogger(__name__)
@@ -81,6 +88,9 @@ def extract_message(
         return answer
     token = _deadline.set(monotonic() + deadline_seconds)
     try:
+        local = _from_ollama(text, catalog, moment) if _remaining() > 0 else None
+        if local is not None:
+            return local
         gemini = _from_gemini(text, catalog, moment) if _remaining() > 0 else None
         if gemini is not None:
             return gemini
@@ -189,6 +199,42 @@ def _from_gemini(text: str, catalog: list[CatalogItem], now: datetime) -> Extrac
             if parsed is not None:
                 return parsed
         log.warning("Gemini attempt %d gave an unparseable reply: %.200r", attempt, getattr(response, "text", ""))
+    return None
+
+
+def _from_ollama(text: str, catalog: list[CatalogItem], now: datetime) -> Extraction | None:
+    """A model running on this machine or network. Skipped unless OLLAMA_HOST is set."""
+    host = ollama_host()
+    if not host or _remaining() <= 0:
+        return None
+    try:
+        import httpx
+
+        response = httpx.post(
+            f"{host}/api/chat",
+            json={
+                "model": ollama_model(),
+                "messages": [{"role": "user", "content": _prompt(text, catalog)}],
+                "stream": False,
+                "format": EXTRACTION_SCHEMA,
+                "options": {"temperature": 0},
+            },
+            timeout=max(_remaining(), 0.001),
+        )
+        response.raise_for_status()
+        body = response.json()
+    except Exception as exc:
+        log.warning("Ollama failed: %s: %s", type(exc).__name__, exc)
+        return None
+    if _remaining() <= 0:
+        log.warning("Ollama reply arrived after the extraction deadline")
+        return None
+    message = body.get("message") if isinstance(body, dict) else None
+    raw = message.get("content") if isinstance(message, dict) else None
+    payload = _parse_json(raw or "")
+    if isinstance(payload, dict):
+        return _extraction_from_payload(payload, text, catalog, now)
+    log.warning("Ollama gave an unparseable reply: %.200r", raw)
     return None
 
 

@@ -246,6 +246,7 @@ export type AdminOverview = {
   handoffs_by_status: Record<string, number>
   integrations: {
     snowflake: { snowflake: 'ok' | 'error' | 'not_configured'; snowflake_message?: string }
+    ollama: { configured: boolean; model: string | null }
     gemini: boolean
     backboard: boolean
     clerk: boolean

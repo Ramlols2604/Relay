@@ -86,6 +86,18 @@ def gemini_model() -> str:
     return os.environ.get("GEMINI_MODEL", "gemini-2.5-flash").strip() or "gemini-2.5-flash"
 
 
+def ollama_host() -> str:
+    """Base URL of a local Ollama server, or empty when OLLAMA_HOST is not set."""
+    raw = os.environ.get("OLLAMA_HOST", "").strip().rstrip("/")
+    if not raw:
+        return ""
+    return raw if "://" in raw else f"http://{raw}"
+
+
+def ollama_model() -> str:
+    return os.environ.get("OLLAMA_MODEL", "llama3.2").strip() or "llama3.2"
+
+
 def backboard_api_key() -> str:
     return os.environ.get("BACKBOARD_API_KEY", "").strip()
 

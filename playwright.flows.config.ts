@@ -18,6 +18,7 @@ const blankRemote = {
   SNOWFLAKE_ROLE: '',
   GEMINI_API_KEY: '',
   BACKBOARD_API_KEY: '',
+  OLLAMA_HOST: '',
 }
 
 /** Browser flows against a real API and the real Activity page. Needs no Clerk keys. */

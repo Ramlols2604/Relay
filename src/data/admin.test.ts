@@ -22,6 +22,7 @@ test('money formats and parses without float surprises', () => {
 
 const base: AdminOverview['integrations'] = {
   snowflake: { snowflake: 'not_configured' },
+  ollama: { configured: false, model: null },
   gemini: false,
   backboard: false,
   clerk: true,
@@ -35,16 +36,24 @@ test('integration rows say what is missing and what is live', () => {
     rows.map((row) => [row.name, row.state]),
     [
       ['Snowflake', 'missing'],
+      ['Ollama (local model)', 'missing'],
       ['Gemini', 'missing'],
       ['Backboard', 'missing'],
       ['Clerk sign-in', 'ok'],
       ['Admin access', 'missing'],
     ],
   )
-  const live = integrationRows({ ...base, snowflake: { snowflake: 'ok' }, gemini: true, admins_configured: 2 })
+  const live = integrationRows({
+    ...base,
+    snowflake: { snowflake: 'ok' },
+    ollama: { configured: true, model: 'mistral' },
+    gemini: true,
+    admins_configured: 2,
+  })
   assert.equal(live[0].state, 'ok')
-  assert.equal(live[1].state, 'ok')
-  assert.equal(live[4].note, '2 admins allowed.')
+  assert.equal(live[1].note, 'Chat tries mistral first.')
+  assert.equal(live[2].state, 'ok')
+  assert.equal(live[5].note, '2 admins allowed.')
   const broken = integrationRows({ ...base, snowflake: { snowflake: 'error', snowflake_message: 'bad login' } })
   assert.deepEqual([broken[0].state, broken[0].note], ['error', 'bad login'])
 })

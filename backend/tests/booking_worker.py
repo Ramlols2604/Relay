@@ -11,6 +11,7 @@ def book(payload: dict) -> int:
     os.environ["RELAY_BOOKING_PEERS"] = "2"
     os.environ["GEMINI_API_KEY"] = ""
     os.environ["BACKBOARD_API_KEY"] = ""
+    os.environ["OLLAMA_HOST"] = ""
     for key in (
         "SNOWFLAKE_ACCOUNT",
         "SNOWFLAKE_USER",

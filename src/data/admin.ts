@@ -46,9 +46,16 @@ export function integrationRows(integrations: AdminOverview['integrations']): In
             : 'Not configured. Inventory and shared demand use the local database only.',
     },
     {
+      name: 'Ollama (local model)',
+      state: integrations.ollama.configured ? 'ok' : 'missing',
+      note: integrations.ollama.configured
+        ? `Chat tries ${integrations.ollama.model ?? 'the model'} first.`
+        : 'OLLAMA_HOST is not set.',
+    },
+    {
       name: 'Gemini',
       state: integrations.gemini ? 'ok' : 'missing',
-      note: integrations.gemini ? 'Chat uses the model.' : 'No key. Chat uses the built-in parser.',
+      note: integrations.gemini ? 'Used when no local model answers.' : 'No key.',
     },
     {
       name: 'Backboard',

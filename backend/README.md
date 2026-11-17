@@ -45,6 +45,10 @@ Confirmed requests expect a `REQUESTS` table: `ID`, `RESIDENT_ID`, `KIND` (`need
 
 Catalog names the matcher knows: Drill, Saw, Level, Sander, Clamps, Tape measure, Notebooks, Ladder. Aliases such as "cordless drill" map to Drill. A drill's demo price is 6000 cents ($60).
 
+`OLLAMA_HOST` (for example `http://127.0.0.1:11434`) and `OLLAMA_MODEL` (default `llama3.2`) point chat understanding at a local Ollama model. It is tried first, then Gemini, then Backboard, then the built-in parser, all inside the same time limit.
+
+`RELAY_ADMIN_USER_IDS` is a comma-separated list of Clerk user ids allowed to use `/api/admin` and the Admin page. Empty means nobody.
+
 `GEMINI_API_KEY` is optional. With no key, chat uses the catalog and a bookshelf tool list.
 
 ## Chat cards

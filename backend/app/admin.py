@@ -11,7 +11,7 @@ from sqlmodel import Session, select
 
 from app import snowflake_store
 from app.auth import auth_disabled, current_actor
-from app.config import admin_user_ids, clerk_issuer, clerk_secret_key
+from app.config import admin_user_ids, clerk_issuer, clerk_secret_key, ollama_host, ollama_model
 from app.db import get_session
 from app.logic import (
     _loan_dict,
@@ -127,6 +127,7 @@ def integrations() -> dict:
     """Which services are configured. Reports yes or no, never the values."""
     return {
         "snowflake": snowflake_store.status(),
+        "ollama": {"configured": bool(ollama_host()), "model": ollama_model() if ollama_host() else None},
         "gemini": bool(os.environ.get("GEMINI_API_KEY", "").strip()),
         "backboard": bool(os.environ.get("BACKBOARD_API_KEY", "").strip()),
         "clerk": bool(clerk_secret_key() and clerk_issuer()),
