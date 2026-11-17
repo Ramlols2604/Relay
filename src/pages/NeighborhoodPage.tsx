@@ -3,50 +3,97 @@ import { Map, X } from 'lucide-react'
 import { GlassCard } from '../components/GlassCard.tsx'
 import { NeighborhoodMap } from '../components/NeighborhoodMap.tsx'
 import { demoCommunityLabel, demoResident } from '../data/index.ts'
+import { useCurrentResident } from '../state/currentResident.ts'
 import {
-  itemsForResident,
   linksForResident,
-  sceneResidentById,
-  sceneResidents,
-  shareLinksFromLoans,
+  residentsFromListings,
+  shareLinksBetween,
   type SceneResident,
-  type SceneResidentId,
 } from '../data/neighborhood.ts'
 import { givenName, loanStatusCopy, type LoanRequest } from '../data/lending.ts'
-import { useInventory } from '../state/inventoryStore.ts'
 import { useLoanRequests } from '../state/loanStore.ts'
+import { useShelfResident } from '../state/shelfResidentStore.ts'
+import { api } from '../api/client.ts'
+import type { ApiInventoryItem } from '../api/types.ts'
 
 type MapFilter = 'all' | 'lending' | 'loans'
 
 export function NeighborhoodPage() {
   const headingId = useId()
   const panelRef = useRef<HTMLElement>(null)
-  const { items } = useInventory()
   const { requests: loans } = useLoanRequests()
-  const [selectedId, setSelectedId] = useState<SceneResidentId | null>(null)
+  const shelfId = useShelfResident()
+  const you = useCurrentResident()
+  const [liveItems, setLiveItems] = useState<ApiInventoryItem[]>([])
+  const [selectedId, setSelectedId] = useState<string | null>(null)
   const [selectedLinkId, setSelectedLinkId] = useState<string | null>(null)
   const [filter, setFilter] = useState<MapFilter>('all')
+  const [query, setQuery] = useState('')
 
-  const links = useMemo(() => shareLinksFromLoans(loans), [loans])
+  useEffect(() => {
+    let cancel = false
+    api
+      .neighborhood(shelfId)
+      .then((body) => {
+        if (!cancel) setLiveItems(body.items)
+      })
+      .catch(() => {
+        if (!cancel) setLiveItems([])
+      })
+    return () => {
+      cancel = true
+    }
+  }, [shelfId])
+
+  const cityMatches = useMemo(() => {
+    const needle = query.trim().toLowerCase()
+    return liveItems.filter((item) => {
+      if (!needle) return true
+      return [item.resident_name, item.catalog_name, item.catalog_item, item.city]
+        .filter(Boolean)
+        .join(' ')
+        .toLowerCase()
+        .includes(needle)
+    })
+  }, [liveItems, query])
+
+  const people = useMemo(
+    () =>
+      residentsFromListings(
+        {
+          id: shelfId,
+          name: you.name || 'You',
+          initials: you.initials || 'YO',
+          street: you.street,
+        },
+        liveItems,
+      ),
+    [liveItems, shelfId, you.initials, you.name, you.street],
+  )
+  const links = useMemo(() => shareLinksBetween(loans, shelfId), [loans, shelfId])
   const lendingIds = useMemo(() => {
     const ids = new Set<string>()
-    for (const resident of sceneResidents) {
-      if (itemsForResident(resident.id, items, loans).length > 0) ids.add(resident.id)
+    for (const resident of people) {
+      if ((resident.offers?.length ?? 0) > 0) ids.add(resident.id)
     }
     return ids
-  }, [items, loans])
+  }, [people])
 
   const visibleResidents = useMemo(() => {
-    return sceneResidents.filter((resident) => {
-      if (filter === 'lending') return lendingIds.has(resident.id)
+    const needle = query.trim().toLowerCase()
+    return people.filter((resident) => {
+      if (filter === 'lending' && !lendingIds.has(resident.id)) return false
       if (filter === 'loans') {
-        return links.some(
+        const onLoan = links.some(
           (link) => link.active && (link.fromId === resident.id || link.toId === resident.id),
         )
+        if (!onLoan) return false
       }
-      return true
+      if (!needle) return true
+      const haystack = [resident.name, resident.street, ...(resident.offers ?? [])].join(' ').toLowerCase()
+      return haystack.includes(needle)
     })
-  }, [filter, lendingIds, links])
+  }, [filter, lendingIds, links, people, query])
 
   const visibleIds = useMemo(
     () => new Set(visibleResidents.map((resident) => resident.id)),
@@ -61,11 +108,11 @@ export function NeighborhoodPage() {
   const activeLinkId =
     selectedLinkId && visibleLinks.some((link) => link.id === selectedLinkId) ? selectedLinkId : null
 
-  const selected = activeResidentId ? sceneResidentById(activeResidentId) : null
-  const selectedItems = useMemo(
-    () => (activeResidentId ? itemsForResident(activeResidentId, items, loans) : []),
-    [activeResidentId, items, loans],
-  )
+  const selected = activeResidentId ? people.find((resident) => resident.id === activeResidentId) ?? null : null
+  const selectedItems = useMemo(() => {
+    if (!selected) return []
+    return (selected.offers ?? []).map((name) => ({ id: name, name, detail: 'Ready to lend' }))
+  }, [selected])
   const selectedLoan = activeLinkId ? (loans.find((loan) => loan.id === activeLinkId) ?? null) : null
   const activeLinks = links.filter((link) => link.active)
   const pendingLinks = links.filter((link) => !link.active)
@@ -78,9 +125,9 @@ export function NeighborhoodPage() {
   }, [activeResidentId, activeLinkId])
 
   function selectResident(id: string) {
-    if (!sceneResidentById(id)) return
+    if (!people.some((resident) => resident.id === id)) return
     setSelectedLinkId(null)
-    setSelectedId(id as SceneResidentId)
+    setSelectedId(id)
   }
 
   function selectLink(id: string) {
@@ -89,13 +136,15 @@ export function NeighborhoodPage() {
   }
 
   const emptyMessage =
-    filter === 'loans' && visibleResidents.length === 0
+    query.trim() && visibleResidents.length === 0
+      ? `No people, products, or inventory match “${query.trim()}”.`
+      : filter === 'loans' && visibleResidents.length === 0
       ? 'No active loans right now.'
       : filter === 'lending' && visibleResidents.length === 0
         ? 'Nobody has something listed to lend.'
         : null
 
-  const lendingCount = sceneResidents.filter((resident) => lendingIds.has(resident.id)).length
+  const lendingCount = people.filter((resident) => lendingIds.has(resident.id)).length
 
   return (
     <section className="hood-page" aria-labelledby={headingId}>
@@ -115,10 +164,20 @@ export function NeighborhoodPage() {
       </GlassCard>
 
       <GlassCard tone="solid" className="hood-stage">
+        <div className="hood-search">
+          <input
+            type="search"
+            value={query}
+            aria-label="Search people, products, and inventory"
+            placeholder="Search your city"
+            onChange={(event) => setQuery(event.target.value)}
+          />
+        </div>
+        <p className="hood-demo-label">{cityMatches.length} listings from people in your city</p>
         <div className="hood-filters" role="group" aria-label="Show residents">
           <FilterButton
             pressed={filter === 'all'}
-            count={sceneResidents.length}
+            count={people.length}
             onClick={() => setFilter('all')}
           >
             All
@@ -171,6 +230,8 @@ export function NeighborhoodPage() {
             {selectedLoan ? (
               <LoanCard
                 loan={selectedLoan}
+                people={people}
+                youId={shelfId}
                 onClose={() => setSelectedLinkId(null)}
                 onSelectResident={selectResident}
               />
@@ -328,16 +389,24 @@ function ResidentCard({
 
 function LoanCard({
   loan,
+  people,
+  youId,
   onClose,
   onSelectResident,
 }: {
   loan: LoanRequest
+  people: readonly SceneResident[]
+  youId: string
   onClose: () => void
   onSelectResident: (id: string) => void
 }) {
-  const lender = sceneResidentById(loan.lenderId)
-  const borrowerId = loan.borrowerId ?? (loan.lenderId === 'resident-avery' ? null : 'resident-avery')
-  const borrower = borrowerId ? sceneResidentById(borrowerId) : null
+  const party = (id: string | undefined) => {
+    if (!id) return null
+    const resolved = id === 'resident-avery' ? youId : id
+    return people.find((resident) => resident.id === resolved) ?? null
+  }
+  const lender = party(loan.lenderId)
+  const borrower = party(loan.borrowerId)
   const active = loan.status !== 'Requested' && loan.status !== 'Returned'
 
   return (

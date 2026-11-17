@@ -25,3 +25,9 @@ def frozen_now() -> datetime:
 def freeze(monkeypatch) -> None:
     for module, name in _PATCH_TARGETS:
         monkeypatch.setattr(module, name, frozen_now)
+
+
+def freeze_module_clocks() -> None:
+    """Pin the clock without pytest, for worker processes started by tests."""
+    for module, name in _PATCH_TARGETS:
+        setattr(module, name, frozen_now)

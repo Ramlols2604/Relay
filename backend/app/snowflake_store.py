@@ -5,6 +5,7 @@ needs, offers, and borrow asks go once credentials exist. Both statements
 are isolated so the column names can be pointed at the real table later.
 """
 
+import json
 from datetime import datetime
 
 from app.clock import aware, now
@@ -13,6 +14,7 @@ from app.config import snowflake_settings
 # Expected INVENTORY columns. Change this query when the upload is visible.
 INVENTORY_SQL = """
 SELECT
+    INVENTORY_ID,
     RESIDENT_ID,
     RESIDENT_NAME,
     X,
@@ -21,7 +23,9 @@ SELECT
     QUANTITY,
     WILLING_TO_LEND,
     CONDITION_NOTE,
-    AVAILABLE_WINDOWS
+    AVAILABLE_WINDOWS,
+    CATEGORY,
+    CONDITION
 FROM INVENTORY
 """
 
@@ -140,10 +144,19 @@ CREATE TABLE IF NOT EXISTS RESIDENTS (
 RESIDENTS_COLUMN_DDL = "ALTER TABLE RESIDENTS ADD COLUMN IF NOT EXISTS ASSIGNED_RESIDENT_ID VARCHAR"
 
 
-def upsert_profile(clerk_user_id: str, name: str, email: str, initials: str, street: str) -> str:
-    """Save the Clerk profile and return the existing neighbor this login keeps."""
+def upsert_profile(
+    clerk_user_id: str,
+    name: str,
+    email: str,
+    initials: str,
+    street: str,
+    city: str = "",
+    about: str = "",
+) -> str:
+    """One account keeps its own resident id. It does not borrow a demo neighbor."""
     if not configured():
         raise SnowflakeError("Snowflake is not configured")
+    assigned = clerk_user_id
     try:
         with _connect() as conn:
             cursor = conn.cursor()
@@ -153,7 +166,6 @@ def upsert_profile(clerk_user_id: str, name: str, email: str, initials: str, str
                 (clerk_user_id,),
             )
             existing = cursor.fetchone()
-            assigned = existing[0] if existing and existing[0] else _next_open_resident(cursor)
             if existing:
                 cursor.execute(
                     """
@@ -214,6 +226,155 @@ def _next_open_resident(cursor) -> str:
         if owner in counts:
             counts[owner] += 1
     return min(pool, key=lambda candidate: (counts[candidate], candidate))
+
+
+INVENTORY_INSERT_SQL = """
+INSERT INTO INVENTORY (
+    INVENTORY_ID, RESIDENT_ID, RESIDENT_NAME, X, Y, CATALOG_ITEM, QUANTITY,
+    WILLING_TO_LEND, CONDITION_NOTE, AVAILABLE_WINDOWS, CATEGORY, CONDITION
+)
+SELECT %s, %s, %s, %s, %s, %s, %s, %s, %s, PARSE_JSON(%s), %s, %s
+WHERE NOT EXISTS (
+    SELECT 1 FROM INVENTORY WHERE INVENTORY_ID = %s
+)
+"""
+
+INVENTORY_UPDATE_SQL = """
+UPDATE INVENTORY
+SET RESIDENT_ID = %s,
+    RESIDENT_NAME = %s,
+    X = %s,
+    Y = %s,
+    CATALOG_ITEM = %s,
+    QUANTITY = %s,
+    WILLING_TO_LEND = %s,
+    CONDITION_NOTE = %s,
+    CATEGORY = %s,
+    CONDITION = %s
+WHERE INVENTORY_ID = %s
+"""
+
+INVENTORY_DELETE_SQL = """
+DELETE FROM INVENTORY
+WHERE INVENTORY_ID = %s
+"""
+
+
+def ensure_inventory_identity() -> None:
+    """Add the stable id columns without recreating INVENTORY."""
+    if not configured():
+        return
+    statements = (
+        "ALTER TABLE INVENTORY ADD COLUMN IF NOT EXISTS INVENTORY_ID VARCHAR",
+        "ALTER TABLE INVENTORY ADD COLUMN IF NOT EXISTS CATEGORY VARCHAR",
+        "ALTER TABLE INVENTORY ADD COLUMN IF NOT EXISTS CONDITION VARCHAR",
+    )
+    try:
+        with _connect() as conn:
+            cursor = conn.cursor()
+            for statement in statements:
+                cursor.execute(statement)
+            conn.commit()
+    except Exception as exc:
+        raise SnowflakeError(str(exc)) from exc
+
+
+def count_inventory() -> int | None:
+    if not configured():
+        return None
+    try:
+        with _connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT COUNT(*) FROM INVENTORY")
+            row = cursor.fetchone()
+        return int(row[0]) if row else 0
+    except Exception as exc:
+        raise SnowflakeError(str(exc)) from exc
+
+
+def insert_inventory_many(rows: list[dict], batch_size: int = 200) -> None:
+    if not configured() or not rows:
+        return
+    payload = [_inventory_params(row) for row in rows]
+    try:
+        with _connect() as conn:
+            cursor = conn.cursor()
+            for start in range(0, len(payload), batch_size):
+                cursor.executemany(INVENTORY_INSERT_SQL, payload[start : start + batch_size])
+            conn.commit()
+    except Exception as exc:
+        raise SnowflakeError(str(exc)) from exc
+
+
+def upsert_inventory(row: dict) -> None:
+    if not configured():
+        return
+    try:
+        with _connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(INVENTORY_UPDATE_SQL, _inventory_update_params(row))
+            if cursor.rowcount == 0:
+                cursor.execute(INVENTORY_INSERT_SQL, _inventory_params(row))
+            conn.commit()
+    except Exception as exc:
+        raise SnowflakeError(str(exc)) from exc
+
+
+def fetch_inventory_row(inventory_id: str) -> dict | None:
+    if not configured():
+        return None
+    for row in fetch_inventory().get("items") or []:
+        if str(row.get("inventory_id") or "") == inventory_id:
+            return row
+    return None
+
+
+def delete_inventory_by_id(inventory_id: str) -> None:
+    if not configured():
+        return
+    try:
+        with _connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(INVENTORY_DELETE_SQL, (inventory_id,))
+            conn.commit()
+    except Exception as exc:
+        raise SnowflakeError(str(exc)) from exc
+
+
+def _inventory_params(row: dict) -> tuple:
+    inventory_id = row.get("inventory_id") or f"{row['resident_id']}:{row['catalog_item']}"
+    windows = row.get("available_windows") or []
+    return (
+        inventory_id,
+        row["resident_id"],
+        row["resident_name"],
+        row.get("x") or 0,
+        row.get("y") or 0,
+        row["catalog_item"],
+        int(row["quantity"]) if row.get("quantity") is not None else 1,
+        bool(row.get("willing_to_lend", True)),
+        row.get("condition_note") or "",
+        json.dumps(windows),
+        row.get("category") or "",
+        row.get("condition") or "",
+        inventory_id,
+    )
+
+
+def _inventory_update_params(row: dict) -> tuple:
+    return (
+        row["resident_id"],
+        row["resident_name"],
+        row.get("x") or 0,
+        row.get("y") or 0,
+        row["catalog_item"],
+        int(row["quantity"]) if row.get("quantity") is not None else 1,
+        bool(row.get("willing_to_lend")),
+        row.get("condition_note") or "",
+        row.get("category") or "",
+        row.get("condition") or "",
+        row["inventory_id"],
+    )
 
 
 def update_request(request_id: str, status: str, quantity: int) -> None:

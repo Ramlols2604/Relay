@@ -4,6 +4,7 @@ import type {
   ApiChatCard,
   ApiHandoff,
   ApiInventory,
+  ApiInventoryItem,
   ApiLoan,
   ApiProject,
   ApiResident,
@@ -12,8 +13,12 @@ import type {
 
 export const apiBase = (import.meta.env.VITE_API_URL || 'http://127.0.0.1:8000').replace(/\/+$/, '')
 
-/** Loan cards still treat the demo neighbor Avery as the local borrower. */
-export const residentId = 'avery'
+let tokenProvider: () => Promise<string | null> = async () => null
+
+/** Clerk session token. The app sets this after sign-in. Do not paste a token by hand. */
+export function setAuthTokenProvider(provider: () => Promise<string | null>) {
+  tokenProvider = provider
+}
 
 export class ApiError extends Error {
   status: number
@@ -27,9 +32,14 @@ export class ApiError extends Error {
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const token = await tokenProvider()
   const response = await fetch(`${apiBase}${path}`, {
     ...init,
-    headers: { 'Content-Type': 'application/json', ...init?.headers },
+    headers: {
+      'Content-Type': 'application/json',
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      ...init?.headers,
+    },
   })
   const body: unknown = await response.json().catch(() => null)
   if (!response.ok) {
@@ -52,10 +62,43 @@ export const api = {
   confirmRequest: (residentId: string, requestId: string) =>
     post<ApiChatCard>(`/api/requests/${requestId}/confirm`, { resident_id: residentId }),
   residents: () => request<ApiResident[]>('/api/residents'),
-  saveProfile: (body: { clerk_user_id: string; name: string; email: string; initials: string; street: string }) =>
-    post<{ id: string; name: string; resident_id: string }>('/api/me', body),
+  saveProfile: (body: {
+    clerk_user_id: string
+    name: string
+    email: string
+    initials: string
+    street: string
+    city?: string
+    about?: string
+  }) =>
+    post<{ id: string; name: string; resident_id: string; city: string; about: string; onboarded: boolean }>(
+      '/api/me',
+      body,
+    ),
+  profile: (clerkUserId: string) =>
+    request<{ resident_id: string | null; city: string; about: string; onboarded: boolean }>(
+      `/api/me?clerk_user_id=${encodeURIComponent(clerkUserId)}`,
+    ),
   inventory: (residentId: string) =>
     request<ApiInventory>(`/api/inventory?resident_id=${encodeURIComponent(residentId)}`),
+  createInventory: (
+    residentId: string,
+    body: { name: string; category: string; quantity: number; condition: string; notes: string; available_to_lend: boolean },
+  ) => post<ApiInventoryItem>('/api/inventory', { resident_id: residentId, ...body }),
+  updateInventory: (
+    residentId: string,
+    itemId: string,
+    body: { name: string; category: string; quantity: number; condition: string; notes: string; available_to_lend: boolean },
+  ) =>
+    request<ApiInventoryItem>(`/api/inventory/${encodeURIComponent(itemId)}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ resident_id: residentId, ...body }),
+    }),
+  deleteInventory: (residentId: string, itemId: string) =>
+    request<{ deleted: string }>(
+      `/api/inventory/${encodeURIComponent(itemId)}?resident_id=${encodeURIComponent(residentId)}`,
+      { method: 'DELETE' },
+    ),
   neighborhood: (residentId: string) =>
     request<ApiInventory>(`/api/neighborhood?resident_id=${encodeURIComponent(residentId)}`),
   catalog: () => request<ApiCatalogItem[]>('/api/catalog'),

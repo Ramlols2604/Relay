@@ -128,6 +128,9 @@ export function ActivityPage() {
                     exchanges.find((exchange) => exchange.id === item.record.requestId)?.quantity ??
                     item.record.quantity
                   }
+                  outstanding={
+                    exchanges.find((exchange) => exchange.id === item.record.requestId)?.outstanding ?? 0
+                  }
                   onAdvance={() => advanceHandoff(item.record.id)}
                 />
               )}
@@ -163,8 +166,10 @@ function FilterButton({
   )
 }
 
-function LoanActivityCard({ loan, onAdvance }: { loan: LoanRequest; onAdvance: () => void }) {
+function LoanActivityCard({ loan, onAdvance }: { loan: LoanRequest; onAdvance: () => Promise<string | null> }) {
   const titleId = useId()
+  const [note, setNote] = useState<string | null>(null)
+  const [busy, setBusy] = useState(false)
   const complete = isLoanComplete(loan.status)
   const lending = isResidentLending(loan)
   const action = loanActionLabel(loan)
@@ -231,9 +236,22 @@ function LoanActivityCard({ loan, onAdvance }: { loan: LoanRequest; onAdvance: (
         <p className="loan-state-copy">{loanStatusCopy(loan)}</p>
         {action ? (
           <>
-            <button type="button" className="loan-lender" onClick={onAdvance}>
-              {action}
+            <button
+              type="button"
+              className="loan-lender"
+              disabled={busy}
+              onClick={() => {
+                setBusy(true)
+                setNote(null)
+                void onAdvance().then((message) => {
+                  setNote(message)
+                  setBusy(false)
+                })
+              }}
+            >
+              {busy ? 'Saving…' : action}
             </button>
+            {note ? <p className="hint loan-lender-hint">{note}</p> : null}
             {loan.status === 'Requested' && !lending ? (
               <p className="hint loan-lender-hint">A stand-in, so you can move the loan forward.</p>
             ) : null}
@@ -251,13 +269,17 @@ function LoanActivityCard({ loan, onAdvance }: { loan: LoanRequest; onAdvance: (
 function HandoffActivityCard({
   handoff,
   requestQuantity,
+  outstanding,
   onAdvance,
 }: {
   handoff: HandoffRecord
   requestQuantity: number
-  onAdvance: () => void
+  outstanding: number
+  onAdvance: () => Promise<string | null>
 }) {
   const titleId = useId()
+  const [note, setNote] = useState<string | null>(null)
+  const [busy, setBusy] = useState(false)
   const complete = isHandoffComplete(handoff.status)
   const action = handoffActionLabel(handoff.status)
   const Icon = complete || handoff.status === 'Confirmed' ? Check : Clock
@@ -331,10 +353,28 @@ function HandoffActivityCard({
         </div>
         <StatusTimeline steps={handoffStatusSteps} current={handoff.status} />
         <p className="loan-state-copy">{handoffStatusCopy(handoff, requestQuantity)}</p>
+        {complete && outstanding > 0 ? (
+          <p className="loan-state-copy">{formatItemQuantity(outstanding, handoff.item)} still open.</p>
+        ) : null}
         {action ? (
-          <button type="button" className="loan-lender" onClick={onAdvance}>
-            {action}
-          </button>
+          <>
+            <button
+              type="button"
+              className="loan-lender"
+              disabled={busy}
+              onClick={() => {
+                setBusy(true)
+                setNote(null)
+                void onAdvance().then((message) => {
+                  setNote(message)
+                  setBusy(false)
+                })
+              }}
+            >
+              {busy ? 'Saving…' : action}
+            </button>
+            {note ? <p className="hint loan-lender-hint">{note}</p> : null}
+          </>
         ) : (
           <p className="activity-success" role="status">
             Handoff completed

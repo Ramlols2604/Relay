@@ -11,6 +11,8 @@ class Resident(SQLModel, table=True):
     initials: str
     x: float = 0
     y: float = 0
+    city: str = ""
+    about: str = ""
 
 
 class CatalogItem(SQLModel, table=True):
@@ -98,4 +100,42 @@ class GardenEvent(SQLModel, table=True):
 class GroupBuy(SQLModel, table=True):
     id: str = Field(primary_key=True)
     catalog_item_id: str
+    created_at: datetime
+
+
+class ShelfItem(SQLModel, table=True):
+    id: str = Field(primary_key=True)
+    resident_id: str
+    name: str
+    category: str = "Household"
+    quantity: int = 1
+    condition: str = ""
+    notes: str = ""
+    available_to_lend: bool = True
+    catalog_item_id: str | None = None
+
+
+class StockRow(SQLModel, table=True):
+    """Generated inventory used when Snowflake is not the source of truth."""
+
+    id: str = Field(primary_key=True)
+    resident_id: str
+    resident_name: str
+    x: float = 0
+    y: float = 0
+    catalog_item: str
+    quantity: int = 1
+    willing_to_lend: bool = True
+    condition_note: str = ""
+
+
+class Reconciliation(SQLModel, table=True):
+    """A Snowflake restore or delete that still needs to be retried."""
+
+    id: str = Field(primary_key=True)
+    action: str
+    inventory_id: str
+    payload: str = ""
+    attempts: int = 0
+    last_error: str = ""
     created_at: datetime

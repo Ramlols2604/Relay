@@ -1,10 +1,15 @@
 import json
+import os
+import threading
+import time
 from datetime import datetime, timedelta
+from pathlib import Path
 from uuid import uuid4
 
 from fastapi import HTTPException
 from sqlmodel import Session, col, select
 
+from app.catalog import match_catalog
 from app.clock import aware, now
 from app.config import DISTANCE_LIMIT, LOAN_BUFFER_MINUTES
 from app.matcher import LenderItem, NeedPoint, Supply, fill_partial, rank_lenders
@@ -17,16 +22,20 @@ from app.models import (
     Loan,
     Project,
     ProjectTool,
+    Reconciliation,
     Request,
     Resident,
+    ShelfItem,
+    StockRow,
 )
 from app.scheduler import first_free_slot, overlaps, schedule_shared
 from app.extract import extract_message
 from app import snowflake_store
 
 BUFFER = timedelta(minutes=LOAN_BUFFER_MINUTES)
+_booking_lock = threading.Lock()
 ACTIVE_LOAN = ("requested", "confirmed", "picked_up")
-ACTIVE_HANDOFF = ("proposed", "confirmed", "received")
+RESERVED_HANDOFF = ("proposed", "confirmed")
 DEMAND_KINDS = ("need", "borrow")
 
 
@@ -124,13 +133,42 @@ def create_loan(
     quantity: int = 1,
     inventory_id: str | None = None,
 ) -> dict:
-    _resident(session, borrower_id)
+    with _booking_lock:
+        return _create_loan_locked(
+            session,
+            borrower_id,
+            lender_id,
+            catalog_item_id,
+            window_start,
+            window_end,
+            quantity,
+            inventory_id,
+        )
+
+
+def _create_loan_locked(
+    session: Session,
+    borrower_id: str,
+    lender_id: str,
+    catalog_item_id: str,
+    window_start: datetime,
+    window_end: datetime,
+    quantity: int = 1,
+    inventory_id: str | None = None,
+) -> dict:
+    _begin_immediate(session)
+    borrower = _resident(session, borrower_id)
+    lender = _resident(session, lender_id)
     item = _catalog_item(session, catalog_item_id)
+    if borrower_id == lender_id:
+        raise HTTPException(status_code=400, detail="You cannot borrow from yourself")
     window_start = aware(window_start)
     window_end = aware(window_end)
-    slot = _assert_free(session, lender_id, catalog_item_id, window_start, window_end, None)
-    if slot is not True:
-        _conflict(slot)
+    _require_window(window_start, window_end)
+    if window_end <= now():
+        raise HTTPException(status_code=400, detail="That window is already over")
+    _require_place(borrower, lender)
+    _require_offer(session, lender, item, quantity, inventory_id, None, window_start, window_end)
     created = now()
     borrow = Request(
         id=uuid4().hex,
@@ -146,7 +184,7 @@ def create_loan(
     )
     session.add(borrow)
     session.flush()
-    _publish(session, borrow)
+    _publish(session, borrow, commit=False)
     loan = Loan(
         id=uuid4().hex,
         lender_id=lender_id,
@@ -172,10 +210,25 @@ def respond_loan(
     action: str,
     window_start: datetime | None = None,
     window_end: datetime | None = None,
+    actor: str | None = None,
+) -> dict:
+    with _booking_lock:
+        return _respond_loan_locked(session, loan_id, action, window_start, window_end, actor)
+
+
+def _respond_loan_locked(
+    session: Session,
+    loan_id: str,
+    action: str,
+    window_start: datetime | None = None,
+    window_end: datetime | None = None,
+    actor: str | None = None,
 ) -> dict:
     loan = session.get(Loan, loan_id)
     if loan is None:
         raise HTTPException(status_code=404, detail="Loan not found")
+    if actor is not None and loan.lender_id != actor:
+        raise HTTPException(status_code=403, detail="Only the lender can answer this loan.")
     if action == "decline":
         if loan.status != "requested":
             raise HTTPException(status_code=409, detail="Only a requested loan can be declined")
@@ -183,16 +236,22 @@ def respond_loan(
     elif action == "accept":
         if loan.status != "requested":
             raise HTTPException(status_code=409, detail="Only a requested loan can be accepted")
-        slot = _assert_free(
+        item = _catalog_item(session, loan.catalog_item_id)
+        lender = _resident(session, loan.lender_id)
+        borrower = _resident(session, loan.borrower_id)
+        _begin_immediate(session)
+        _require_window(loan.window_start, loan.window_end)
+        _require_place(borrower, lender)
+        _require_offer(
             session,
-            loan.lender_id,
-            loan.catalog_item_id,
+            lender,
+            item,
+            loan.quantity,
+            loan.inventory_id,
+            loan.id,
             loan.window_start,
             loan.window_end,
-            loan.id,
         )
-        if slot is not True:
-            _conflict(slot)
         loan.status = "confirmed"
     elif action == "propose_time":
         if loan.status != "requested":
@@ -201,6 +260,7 @@ def respond_loan(
             raise HTTPException(status_code=400, detail="propose_time needs a window")
         window_start = aware(window_start)
         window_end = aware(window_end)
+        _require_window(window_start, window_end)
         slot = _assert_free(
             session,
             loan.lender_id,
@@ -221,8 +281,10 @@ def respond_loan(
     return {"type": "loan_status", "record": "loan", **_loan_dict(loan)}
 
 
-def pickup_loan(session: Session, loan_id: str) -> dict:
+def pickup_loan(session: Session, loan_id: str, actor: str | None = None) -> dict:
     loan = _loan(session, loan_id)
+    if actor is not None and loan.borrower_id != actor:
+        raise HTTPException(status_code=403, detail="Only the borrower can pick this up.")
     if loan.status != "confirmed":
         raise HTTPException(status_code=409, detail="Pick up a confirmed loan")
     loan.status = "picked_up"
@@ -232,8 +294,10 @@ def pickup_loan(session: Session, loan_id: str) -> dict:
     return {"type": "loan_status", "record": "loan", **_loan_dict(loan)}
 
 
-def return_loan(session: Session, loan_id: str) -> dict:
+def return_loan(session: Session, loan_id: str, actor: str | None = None) -> dict:
     loan = _loan(session, loan_id)
+    if actor is not None and loan.borrower_id != actor:
+        raise HTTPException(status_code=403, detail="Only the borrower can return this.")
     if loan.status != "picked_up":
         raise HTTPException(status_code=409, detail="Return a loan that was picked up")
     loan.status = "returned"
@@ -269,8 +333,10 @@ def confirm_handoff(session: Session, handoff_id: str, resident_id: str) -> dict
     return {"type": "loan_status", "record": "handoff", **_handoff_dict(session, handoff)}
 
 
-def decline_handoff(session: Session, handoff_id: str) -> dict:
+def decline_handoff(session: Session, handoff_id: str, actor: str | None = None) -> dict:
     handoff = _handoff(session, handoff_id)
+    if actor is not None and not _handoff_party(session, handoff, actor):
+        raise HTTPException(status_code=403, detail="Only someone in this handoff can decline it.")
     if handoff.status not in {"proposed", "confirmed"}:
         raise HTTPException(status_code=409, detail="This handoff cannot be declined")
     handoff.status = "declined"
@@ -281,15 +347,19 @@ def decline_handoff(session: Session, handoff_id: str) -> dict:
     return {"type": "loan_status", "record": "handoff", **_handoff_dict(session, handoff)}
 
 
-def receive_handoff(session: Session, handoff_id: str) -> dict:
+def receive_handoff(session: Session, handoff_id: str, actor: str | None = None) -> dict:
     handoff = _handoff(session, handoff_id)
+    if actor is not None and handoff.recipient_id != actor:
+        raise HTTPException(status_code=403, detail="Only the person receiving this can mark it received.")
     if handoff.status != "confirmed":
         raise HTTPException(status_code=409, detail="Mark a confirmed handoff as received")
     handoff.status = "received"
     session.add(handoff)
     need = _find_request(session, handoff.need_request_id)
     if need is not None:
-        _set_request_status(session, need["id"], "closed", quantity=need["quantity"])
+        received_qty = sum(row.quantity for row in _allocations(session, handoff.id))
+        left = max(0, int(need["quantity"]) - received_qty)
+        _set_request_status(session, need["id"], "closed" if left == 0 else "open", quantity=left)
     for allocation in _allocations(session, handoff.id):
         offer = _find_request(session, allocation.offer_request_id)
         if offer is None:
@@ -360,39 +430,380 @@ def start_group_buy(session: Session, catalog_item_id: str) -> dict:
 
 
 def inventory_view(session: Session, resident_id: str | None = None) -> dict:
+    local = _local_inventory(session, resident_id)
     raw = snowflake_store.fetch_inventory()
     if raw["snowflake"] != "ok":
-        payload = {"snowflake": raw["snowflake"], "items": []}
+        payload = {"snowflake": raw["snowflake"], "items": _merge_items(_stock_items(session, resident_id), local)}
         if raw.get("snowflake_message"):
             payload["snowflake_message"] = raw["snowflake_message"]
         return payload
     catalog = _catalog(session)
+    local_by_id = {item["inventory_id"]: item for item in local}
+    local_by_name = {
+        (item["resident_id"], str(item["catalog_item"]).lower()): item for item in local
+    }
     items = []
+    seen = set()
     for row in raw["items"]:
         label = str(row.get("catalog_item") or "")
-        match = _match_label(label, catalog)
         owner = str(row.get("resident_id") or "")
         if resident_id is not None and owner != resident_id:
             continue
-        items.append(_inventory_item(row, match))
+        remote_id = str(row.get("inventory_id") or "")
+        saved = local_by_id.get(remote_id) if remote_id else None
+        if saved is None and not remote_id:
+            saved = local_by_name.get((owner, label.lower()))
+        item = saved if saved is not None else _inventory_item(row, _match_label(label, catalog))
+        items.append(item)
+        seen.add(item["inventory_id"])
+    for item in local:
+        if item["inventory_id"] not in seen:
+            items.append(item)
     return {"snowflake": "ok", "items": items}
+
+
+def create_shelf_item(
+    session: Session,
+    resident_id: str,
+    name: str,
+    category: str,
+    quantity: int,
+    condition: str,
+    notes: str,
+    available_to_lend: bool,
+) -> dict:
+    resident = _resident(session, resident_id)
+    cleaned = " ".join(name.split())
+    if not cleaned:
+        raise HTTPException(status_code=400, detail="Give this item a name first.")
+    if _shelf_name_taken(session, resident.id, cleaned):
+        raise HTTPException(status_code=409, detail="That name is already on your shelf.")
+    item = ShelfItem(
+        id=str(uuid4()),
+        resident_id=resident.id,
+        name=cleaned,
+        category=category or "Household",
+        quantity=max(0, quantity),
+        condition=condition,
+        notes=notes.strip(),
+        available_to_lend=available_to_lend,
+        catalog_item_id=_catalog_id_for_name(session, cleaned),
+    )
+    session.add(item)
+    _save_shelf(session, resident, item, created=True)
+    return _shelf_dict(session, item, resident)
+
+
+def update_shelf_item(
+    session: Session,
+    resident_id: str,
+    item_id: str,
+    name: str,
+    category: str,
+    quantity: int,
+    condition: str,
+    notes: str,
+    available_to_lend: bool,
+) -> dict:
+    resident = _resident(session, resident_id)
+    cleaned = " ".join(name.split())
+    if not cleaned:
+        raise HTTPException(status_code=400, detail="Give this item a name first.")
+    owner = _inventory_owner(session, item_id)
+    if owner is None:
+        raise HTTPException(status_code=404, detail="That item is not on a shelf.")
+    if owner != resident.id:
+        raise HTTPException(status_code=403, detail="That item belongs to someone else.")
+    item = session.get(ShelfItem, item_id)
+    created = item is None
+    if _shelf_name_taken(session, resident.id, cleaned, ignore_id=item.id if item else None):
+        raise HTTPException(status_code=409, detail="That name is already on your shelf.")
+    if item is None:
+        item = ShelfItem(id=item_id, resident_id=resident.id, name=cleaned)
+    item.name = cleaned
+    item.category = category or item.category or "Household"
+    item.quantity = max(0, quantity)
+    item.condition = condition
+    item.notes = notes.strip()
+    item.available_to_lend = available_to_lend
+    item.catalog_item_id = _catalog_id_for_name(session, cleaned)
+    session.add(item)
+    _save_shelf(session, resident, item, created=created)
+    return _shelf_dict(session, item, resident)
+
+
+def delete_shelf_item(session: Session, resident_id: str, item_id: str) -> dict:
+    resident = _resident(session, resident_id)
+    owner = _inventory_owner(session, item_id)
+    if owner is None:
+        raise HTTPException(status_code=404, detail="That item is not on a shelf.")
+    if owner != resident.id:
+        raise HTTPException(status_code=403, detail="That item belongs to someone else.")
+    item = session.get(ShelfItem, item_id)
+    previous = snowflake_store.fetch_inventory_row(item_id)
+    remote_attempted = False
+    try:
+        if snowflake_store.configured() and previous is not None:
+            remote_attempted = True
+            snowflake_store.delete_inventory_by_id(item_id)
+        removed_local = False
+        if item is not None:
+            session.delete(item)
+            removed_local = True
+        for stock in _stock_replaced_by(session, resident.id, item_id, item):
+            session.delete(stock)
+            removed_local = True
+        if removed_local:
+            _commit_session(session)
+    except Exception:
+        session.rollback()
+        if remote_attempted and previous is not None:
+            _compensate_remote(session, item_id, previous, created=False)
+        raise
+    return {"deleted": item_id}
+
+
+def _shelf_name_taken(session: Session, resident_id: str, name: str, ignore_id: str | None = None) -> bool:
+    key = name.lower()
+    rows = session.exec(select(ShelfItem).where(ShelfItem.resident_id == resident_id)).all()
+    return any(row.id != ignore_id and row.name.lower() == key for row in rows)
+
+
+def _stock_replaced_by(session: Session, resident_id: str, item_id: str, item: ShelfItem | None) -> list[StockRow]:
+    """Shelf edits stand in for the generated stock row they came from."""
+    name = item.name.lower() if item is not None else None
+    rows = session.exec(select(StockRow).where(StockRow.resident_id == resident_id)).all()
+    return [
+        stock
+        for stock in rows
+        if stock.id == item_id or (name is not None and stock.catalog_item.lower() == name)
+    ]
+
+
+def _stock_items(session: Session, resident_id: str | None) -> list[dict]:
+    query = select(StockRow)
+    if resident_id is not None:
+        query = query.where(StockRow.resident_id == resident_id)
+    catalog = _catalog(session)
+    return [_inventory_item(_stock_dict(row), _match_label(row.catalog_item, catalog)) for row in session.exec(query).all()]
+
+
+def _stock_dict(row: StockRow) -> dict:
+    return {
+        "inventory_id": row.id,
+        "resident_id": row.resident_id,
+        "resident_name": row.resident_name,
+        "x": row.x,
+        "y": row.y,
+        "catalog_item": row.catalog_item,
+        "quantity": row.quantity,
+        "willing_to_lend": row.willing_to_lend,
+        "condition_note": row.condition_note,
+    }
+
+
+def _merge_items(base: list[dict], overlay: list[dict]) -> list[dict]:
+    seen = {(row["resident_id"], str(row["catalog_item"]).lower()) for row in overlay}
+    return overlay + [
+        row for row in base if (row["resident_id"], str(row["catalog_item"]).lower()) not in seen
+    ]
+
+
+def _local_inventory(session: Session, resident_id: str | None) -> list[dict]:
+    query = select(ShelfItem)
+    if resident_id is not None:
+        query = query.where(ShelfItem.resident_id == resident_id)
+    rows = session.exec(query).all()
+    items = []
+    for row in rows:
+        resident = session.get(Resident, row.resident_id)
+        if resident is None:
+            continue
+        items.append(_shelf_dict(session, row, resident))
+    return items
+
+
+def _shelf_dict(session: Session, item: ShelfItem, resident: Resident) -> dict:
+    catalog_id = item.catalog_item_id or _catalog_id_for_name(session, item.name)
+    return {
+        "inventory_id": item.id,
+        "resident_id": resident.id,
+        "resident_name": resident.name,
+        "x": resident.x,
+        "y": resident.y,
+        "catalog_item": item.name,
+        "catalog_item_id": catalog_id,
+        "catalog_name": item.name,
+        "category": item.category,
+        "condition": item.condition,
+        "quantity": item.quantity,
+        "willing_to_lend": item.available_to_lend,
+        "condition_note": item.notes,
+    }
+
+
+def _catalog_id_for_name(session: Session, name: str) -> str | None:
+    match = match_catalog(name, _catalog(session))
+    return match.id if match else None
+
+
+def _inventory_owner(session: Session, item_id: str) -> str | None:
+    shelf = session.get(ShelfItem, item_id)
+    if shelf is not None:
+        return shelf.resident_id
+    stock = session.get(StockRow, item_id)
+    if stock is not None:
+        return stock.resident_id
+    remote = snowflake_store.fetch_inventory_row(item_id)
+    if remote is not None and remote.get("resident_id"):
+        return str(remote["resident_id"])
+    return None
+
+
+def _save_shelf(session: Session, resident: Resident, item: ShelfItem, created: bool) -> None:
+    previous = snowflake_store.fetch_inventory_row(item.id)
+    if isinstance(previous, dict):
+        previous = dict(previous)
+    attempted = False
+    try:
+        session.flush()
+        if snowflake_store.configured():
+            attempted = True
+            _mirror_inventory(resident, item)
+        _commit_session(session)
+    except Exception:
+        session.rollback()
+        if attempted:
+            _compensate_remote(session, item.id, previous, created)
+        raise
+
+
+def _compensate_remote(session: Session, item_id: str, previous: dict | None, created: bool) -> None:
+    """Put Snowflake back, and remember the job when that write also fails."""
+    action = "restore" if previous is not None else "delete" if created else ""
+    if not action:
+        return
+    try:
+        if action == "restore" and previous is not None:
+            snowflake_store.upsert_inventory(previous)
+            return
+        snowflake_store.delete_inventory_by_id(item_id)
+    except Exception as exc:
+        _queue_reconciliation(session, action, item_id, previous, exc)
+
+
+def _queue_reconciliation(
+    session: Session,
+    action: str,
+    item_id: str,
+    previous: dict | None,
+    exc: Exception,
+) -> None:
+    session.add(
+        Reconciliation(
+            id=uuid4().hex,
+            action=action,
+            inventory_id=item_id,
+            payload=json.dumps(previous) if previous is not None else "",
+            attempts=1,
+            last_error=type(exc).__name__,
+            created_at=now(),
+        )
+    )
+    session.commit()
+
+
+def retry_reconciliations(session: Session) -> None:
+    if not snowflake_store.configured():
+        return
+    rows = session.exec(select(Reconciliation)).all()
+    for row in rows:
+        try:
+            if row.action == "restore":
+                snowflake_store.upsert_inventory(json.loads(row.payload))
+            elif row.action == "delete":
+                snowflake_store.delete_inventory_by_id(row.inventory_id)
+            else:
+                continue
+            if not snowflake_store.configured():
+                continue
+            session.delete(row)
+        except Exception as exc:
+            row.attempts += 1
+            row.last_error = type(exc).__name__
+            session.add(row)
+    session.commit()
+
+
+def _label_for_id(session: Session, resident_id: str, item_id: str) -> str | None:
+    prefix = f"{resident_id}:"
+    if item_id.startswith(prefix):
+        token = item_id[len(prefix):]
+        for item in _catalog(session):
+            if item.id == token:
+                return item.name
+        return token
+    return None
+
+
+def _commit_session(session: Session) -> None:
+    session.commit()
+
+
+def _own_project(session: Session, project_id: str, actor: str | None) -> None:
+    if actor is None:
+        return
+    project = session.get(Project, project_id)
+    if project is not None and project.resident_id != actor:
+        raise HTTPException(status_code=403, detail="This account cannot change another resident's project.")
+
+
+def _handoff_party(session: Session, handoff, actor: str) -> bool:
+    if handoff.recipient_id == actor:
+        return True
+    return any(row.resident_id == actor for row in _allocations(session, handoff.id))
+
+
+def _mirror_inventory(resident: Resident, item: ShelfItem) -> bool:
+    if not snowflake_store.configured():
+        return False
+    row = {
+        "inventory_id": item.id,
+        "resident_id": resident.id,
+        "resident_name": resident.name,
+        "x": resident.x,
+        "y": resident.y,
+        "catalog_item": item.name,
+        "catalog_item_id": item.catalog_item_id,
+        "category": item.category,
+        "condition": item.condition,
+        "quantity": item.quantity,
+        "willing_to_lend": item.available_to_lend,
+        "condition_note": item.notes,
+    }
+    try:
+        snowflake_store.upsert_inventory(row)
+    except snowflake_store.SnowflakeError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    return True
 
 
 def neighborhood(session: Session, resident_id: str) -> dict:
     resident = _resident(session, resident_id)
     view = inventory_view(session)
-    if view["snowflake"] != "ok":
-        return view
     items = []
     for row in view["items"]:
         if row["resident_id"] == resident.id or not row["willing_to_lend"]:
             continue
+        if not _same_city(session, resident.id, row["resident_id"]):
+            continue
         distance = abs(float(row["x"]) - resident.x) + abs(float(row["y"]) - resident.y)
         if distance > DISTANCE_LIMIT:
             continue
-        items.append({**row, "distance": distance})
+        owner = session.get(Resident, row["resident_id"])
+        items.append({**row, "distance": distance, "city": owner.city if owner else ""})
     items.sort(key=lambda row: (row["distance"], row["resident_name"]))
-    return {"snowflake": "ok", "resident_id": resident.id, "items": items}
+    return {"snowflake": view["snowflake"], "resident_id": resident.id, "items": items}
 
 
 def activity(session: Session, resident_id: str | None) -> dict:
@@ -436,7 +847,15 @@ def my_stuff(session: Session, resident_id: str) -> dict:
     }
 
 
-def update_tool(session: Session, project_id: str, tool_id: str, optional: bool | None, have_already: bool | None) -> dict:
+def update_tool(
+    session: Session,
+    project_id: str,
+    tool_id: str,
+    optional: bool | None,
+    have_already: bool | None,
+    actor: str | None = None,
+) -> dict:
+    _own_project(session, project_id, actor)
     tool = session.get(ProjectTool, tool_id)
     if tool is None or tool.project_id != project_id:
         raise HTTPException(status_code=404, detail="Tool not found")
@@ -450,7 +869,14 @@ def update_tool(session: Session, project_id: str, tool_id: str, optional: bool 
     return _project_dict(session, project)
 
 
-def add_tool(session: Session, project_id: str, catalog_item_id: str, optional: bool = False) -> dict:
+def add_tool(
+    session: Session,
+    project_id: str,
+    catalog_item_id: str,
+    optional: bool = False,
+    actor: str | None = None,
+) -> dict:
+    _own_project(session, project_id, actor)
     project = session.get(Project, project_id)
     if project is None:
         raise HTTPException(status_code=404, detail="Project not found")
@@ -471,7 +897,8 @@ def add_tool(session: Session, project_id: str, catalog_item_id: str, optional: 
     return _project_dict(session, project)
 
 
-def remove_tool(session: Session, project_id: str, tool_id: str) -> dict:
+def remove_tool(session: Session, project_id: str, tool_id: str, actor: str | None = None) -> dict:
+    _own_project(session, project_id, actor)
     tool = session.get(ProjectTool, tool_id)
     if tool is None or tool.project_id != project_id:
         raise HTTPException(status_code=404, detail="Tool not found")
@@ -563,13 +990,16 @@ def _draft_request(session, resident, message, extraction, catalog) -> dict:
     }
 
 
-def _publish(session: Session, request: Request) -> None:
+def _publish(session: Session, request: Request, commit: bool = True) -> None:
     if snowflake_store.configured():
         snowflake_store.insert_request(_request_dict(request))
         request.status = "synced"
     else:
         request.status = "open"
     session.add(request)
+    if not commit:
+        session.flush()
+        return
     session.commit()
     session.refresh(request)
 
@@ -609,7 +1039,7 @@ def _sync_need(session: Session, need: dict) -> dict:
             col(Handoff.status).in_(["proposed", "confirmed", "received"]),
         )
     ).all()
-    confirmed = [row for row in existing if row.status in {"confirmed", "received"}]
+    confirmed = [row for row in existing if row.status == "confirmed"]
     covered = 0
     for handoff in confirmed:
         covered += sum(row.quantity for row in _allocations(session, handoff.id))
@@ -620,6 +1050,12 @@ def _sync_need(session: Session, need: dict) -> dict:
     offers = []
     for row in _open_requests(session):
         if row["kind"] != "offer" or row["catalog_item_id"] != need["catalog_item_id"]:
+            continue
+        if row["resident_id"] == need["resident_id"]:
+            continue
+        if not _windows_compatible(need, row):
+            continue
+        if not _same_city(session, need["resident_id"], row["resident_id"]):
             continue
         available = int(row["quantity"]) - _allocated_elsewhere(session, row["id"], exclude)
         if available > 0:
@@ -673,9 +1109,143 @@ def _allocated_elsewhere(session: Session, offer_id: str, exclude_handoff: str |
         if exclude_handoff and row.handoff_id == exclude_handoff:
             continue
         handoff = session.get(Handoff, row.handoff_id)
-        if handoff and handoff.status in ACTIVE_HANDOFF:
+        if handoff and handoff.status in RESERVED_HANDOFF:
             total += row.quantity
     return total
+
+
+def _windows_compatible(need: dict, offer: dict) -> bool:
+    start = need.get("window_start")
+    end = need.get("window_end")
+    other_start = offer.get("window_start")
+    other_end = offer.get("window_end")
+    if not start or not end or not other_start or not other_end:
+        return True
+    return overlaps(start, end, other_start, other_end)
+
+
+def _same_city(session: Session, left_id: str, right_id: str) -> bool:
+    left = session.get(Resident, left_id)
+    right = session.get(Resident, right_id)
+    if left is None or right is None or not left.city.strip() or not right.city.strip():
+        return False
+    return left.city.casefold() == right.city.casefold()
+
+
+def _require_place(borrower: Resident, lender: Resident) -> None:
+    if not borrower.city.strip() or not lender.city.strip():
+        raise HTTPException(status_code=400, detail="Both people need a city before a loan.")
+    if borrower.city.casefold() != lender.city.casefold():
+        raise HTTPException(status_code=400, detail="Loans stay in one city.")
+    distance = abs(borrower.x - lender.x) + abs(borrower.y - lender.y)
+    if distance > DISTANCE_LIMIT:
+        raise HTTPException(status_code=400, detail="That lender is too far away.")
+
+
+def _begin_immediate(session: Session) -> None:
+    """Take SQLite's write lock before reading how many items are still free."""
+    _meet_booking_peers()
+    raw = session.connection().connection
+    try:
+        raw.execute("BEGIN IMMEDIATE")
+        return
+    except Exception:
+        pass
+    try:
+        raw.rollback()
+        raw.execute("BEGIN IMMEDIATE")
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail="Could not reserve this item.") from exc
+
+
+def _meet_booking_peers() -> None:
+    gate = os.environ.get("RELAY_BOOKING_GATE", "").strip()
+    if not gate:
+        return
+    folder = Path(gate)
+    folder.mkdir(parents=True, exist_ok=True)
+    name = os.environ.get("RELAY_BOOKING_NAME", "peer")
+    (folder / name).write_text("ready")
+    peers = int(os.environ.get("RELAY_BOOKING_PEERS", "2"))
+    deadline = time.time() + 8
+    while time.time() < deadline:
+        if len(list(folder.iterdir())) >= peers:
+            return
+        time.sleep(0.02)
+    raise HTTPException(status_code=503, detail="Could not reserve this item.")
+
+
+def _require_window(start: datetime, end: datetime) -> None:
+    if end <= start:
+        raise HTTPException(status_code=400, detail="Window end must be after start")
+
+
+def _require_offer(
+    session: Session,
+    lender: Resident,
+    item: CatalogItem,
+    quantity: int,
+    inventory_id: str | None,
+    exclude_loan_id: str | None = None,
+    window_start: datetime | None = None,
+    window_end: datetime | None = None,
+) -> None:
+    owned, available = _available_quantity(session, lender.id, item, inventory_id, exclude_loan_id, window_start, window_end)
+    if owned is None:
+        raise HTTPException(status_code=404, detail="That lender is not offering this item")
+    if quantity > owned:
+        raise HTTPException(status_code=400, detail="Not enough of that item is available to lend")
+    if quantity > available:
+        slot = _assert_free(session, lender.id, item.id, window_start, window_end, exclude_loan_id)
+        if slot is not True:
+            _conflict(slot)
+        raise HTTPException(status_code=400, detail="Not enough of that item is available to lend")
+
+
+def _available_quantity(
+    session: Session,
+    lender_id: str,
+    item: CatalogItem,
+    inventory_id: str | None,
+    exclude_loan_id: str | None = None,
+    window_start: datetime | None = None,
+    window_end: datetime | None = None,
+) -> tuple[int | None, int]:
+    shelves = session.exec(select(ShelfItem).where(ShelfItem.resident_id == lender_id)).all()
+    replaced_ids = {shelf.id for shelf in shelves}
+    replaced_names = {shelf.name.lower() for shelf in shelves}
+    rows: list[tuple[str, int]] = []
+    for shelf in shelves:
+        if shelf.available_to_lend and _lists_item(session, shelf.name, shelf.catalog_item_id, item):
+            rows.append((shelf.id, shelf.quantity))
+    for stock in session.exec(select(StockRow).where(StockRow.resident_id == lender_id)).all():
+        if stock.id in replaced_ids or stock.catalog_item.lower() in replaced_names:
+            continue
+        if stock.willing_to_lend and _lists_item(session, stock.catalog_item, None, item):
+            rows.append((stock.id, stock.quantity))
+    if inventory_id:
+        rows = [row for row in rows if row[0] == inventory_id]
+    if not rows:
+        return None, 0
+    owned = sum(quantity for _row_id, quantity in rows)
+    ids = {row_id for row_id, _quantity in rows}
+    reserved = 0
+    for loan in session.exec(select(Loan).where(Loan.lender_id == lender_id, Loan.catalog_item_id == item.id)).all():
+        if loan.status not in ACTIVE_LOAN or loan.id == exclude_loan_id:
+            continue
+        if loan.inventory_id and loan.inventory_id not in ids:
+            continue
+        if window_start is not None and window_end is not None:
+            if not overlaps(window_start, window_end, loan.window_start - BUFFER, loan.window_end + BUFFER):
+                continue
+        reserved += loan.quantity
+    return owned, max(0, owned - reserved)
+
+
+def _lists_item(session: Session, label: str, linked_id: str | None, item: CatalogItem) -> bool:
+    if linked_id:
+        return linked_id == item.id
+    return _catalog_id_for_name(session, label) == item.id
 
 
 def _assert_free(session, lender_id, catalog_item_id, start, end, exclude_id):
@@ -860,8 +1430,13 @@ def _project_dict(session: Session, project: Project) -> dict:
     for tool in tools:
         item = catalog.get(tool.catalog_item_id)
         neighbors = []
-        if view["snowflake"] == "ok" and item is not None:
+        if item is not None:
             resident = session.get(Resident, project.resident_id)
+            nearby = [
+                row
+                for row in view["items"]
+                if _same_city(session, project.resident_id, str(row.get("resident_id") or ""))
+            ]
             lenders = rank_lenders(
                 NeedPoint(
                     resident_id=project.resident_id,
@@ -871,7 +1446,7 @@ def _project_dict(session: Session, project: Project) -> dict:
                     window_start=project.window_start,
                     window_end=project.window_end,
                 ),
-                [_lender_item(row) for row in view["items"]],
+                [_lender_item(row) for row in nearby],
                 DISTANCE_LIMIT,
             )
             neighbors = lenders
@@ -909,6 +1484,17 @@ def _lender_item(row: dict) -> LenderItem:
     )
 
 
+def _ui_category(category: str | None) -> str:
+    return {
+        "tool": "Tools",
+        "garden": "Garden",
+        "kitchen": "Kitchen",
+        "household": "Household",
+        "sports": "Sports",
+        "supply": "Household",
+    }.get(category or "", "Household")
+
+
 def _inventory_item(row: dict, match: CatalogItem | None) -> dict:
     willing = row.get("willing_to_lend")
     if isinstance(willing, str):
@@ -923,7 +1509,9 @@ def _inventory_item(row: dict, match: CatalogItem | None) -> dict:
         "catalog_item": row.get("catalog_item"),
         "catalog_item_id": match.id if match else None,
         "catalog_name": match.name if match else row.get("catalog_item"),
-        "quantity": row.get("quantity") or 0,
+        "category": row.get("category") or _ui_category(match.category if match else None),
+        "condition": row.get("condition") or "",
+        "quantity": row.get("quantity") if row.get("quantity") is not None else 0,
         "willing_to_lend": bool(willing),
         "condition_note": row.get("condition_note") or "",
         "windows": _windows(row.get("available_windows")),

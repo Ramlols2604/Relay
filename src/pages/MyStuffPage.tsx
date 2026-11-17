@@ -73,6 +73,7 @@ export function MyStuffPage() {
   )
   const [draft, setDraft] = useState<InventoryDraft>(createInventoryDraft)
   const [formNote, setFormNote] = useState('')
+  const [shelfNote, setShelfNote] = useState('')
 
   const lendableCount = useMemo(
     () => items.filter((item) => item.availableToLend && !outboundLoanForItem(loans, item.id)).length,
@@ -126,19 +127,15 @@ export function MyStuffPage() {
     setFormNote('')
   }
 
-  function onSubmit(event: FormEvent<HTMLFormElement>) {
+  async function onSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     if (!editor) return
 
-    const saved =
-      editor.mode === 'add' ? addItem(draft) : updateItem(editor.item.id, draft)
+    const problem =
+      editor.mode === 'add' ? await addItem(draft) : await updateItem(editor.item.id, draft)
 
-    if (!saved) {
-      setFormNote(
-        draft.name.trim()
-          ? 'That name is already on your shelf.'
-          : 'Give this item a name first.',
-      )
+    if (problem) {
+      setFormNote(problem)
       return
     }
 
@@ -265,6 +262,8 @@ export function MyStuffPage() {
           </button>
         </GlassCard>
       ) : (
+        <>
+        {shelfNote ? <p className="hint">{shelfNote}</p> : null}
         <ul className="shelf-grid">
           {visibleItems.map((item) => {
             const onLoan = outboundLoanForItem(loans, item.id)
@@ -276,14 +275,19 @@ export function MyStuffPage() {
                   onLoan={onLoan}
                   pending={pending}
                   onEdit={() => openEdit(item)}
-                  onRemove={() => removeItem(item.id)}
-                  onToggleLend={(available) => setAvailableToLend(item.id, available)}
+                  onRemove={() => {
+                    void removeItem(item.id).then((problem) => setShelfNote(problem ?? ''))
+                  }}
+                  onToggleLend={(available) => {
+                    void setAvailableToLend(item.id, available).then((problem) => setShelfNote(problem ?? ''))
+                  }}
                   onAcceptPending={pending ? () => advanceLoan(pending.id) : undefined}
                 />
               </li>
             )
           })}
         </ul>
+        </>
       )}
 
       {filtersActive && !emptyShelf && !emptyFilter ? (
@@ -426,7 +430,9 @@ function InventoryCard({
   )
 }
 
-function IncomingLoanRow({ loan, onAccept }: { loan: LoanRequest; onAccept: () => void }) {
+function IncomingLoanRow({ loan, onAccept }: { loan: LoanRequest; onAccept: () => Promise<string | null> }) {
+  const [note, setNote] = useState<string | null>(null)
+  const [busy, setBusy] = useState(false)
   return (
     <div className="shelf-incoming-row">
       <div className="shelf-incoming-copy">
@@ -435,9 +441,22 @@ function IncomingLoanRow({ loan, onAccept }: { loan: LoanRequest; onAccept: () =
           {loan.borrowerName ?? 'A neighbor'} · pickup {loan.pickupLabel} · back by {loan.returnLabel}
         </p>
       </div>
-      <button type="button" className="loan-lender" onClick={onAccept}>
-        Accept request
+      <button
+        type="button"
+        className="loan-lender"
+        disabled={busy}
+        onClick={() => {
+          setBusy(true)
+          setNote(null)
+          void onAccept().then((message) => {
+            setNote(message)
+            setBusy(false)
+          })
+        }}
+      >
+        {busy ? 'Saving…' : 'Accept request'}
       </button>
+      {note ? <p className="hint">{note}</p> : null}
     </div>
   )
 }

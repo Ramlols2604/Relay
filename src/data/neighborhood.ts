@@ -19,6 +19,8 @@ export type SceneResident = {
   /** Fictional demo profile. Not a geocoded address and not the map pin. */
   street: string
   isYou: boolean
+  /** Items this person will lend, used by map search when there is no loan listing. */
+  offers?: readonly string[]
   /**
    * Placement on the real map backdrop. These points sit on a compact cluster
    * of residential blocks in Park Slope so the demo reads as one neighborhood.
@@ -91,10 +93,118 @@ export const sceneResidents: readonly SceneResident[] = [
     longitude: -73.980326,
     latitude: 40.666533,
   },
+  {
+    id: 'neighbor-luis',
+    name: 'Luis Alvarez',
+    initials: 'LA',
+    street: '11 Willow Court',
+    isYou: false,
+    offers: ['Garden hose', 'Soccer ball'],
+    longitude: -73.9814,
+    latitude: 40.6681,
+  },
+  {
+    id: 'neighbor-nia',
+    name: 'Nia Patel',
+    initials: 'NP',
+    street: '4 Oak Lane',
+    isYou: false,
+    offers: ['Folding table', 'Mixing bowl'],
+    longitude: -73.9796,
+    latitude: 40.6674,
+  },
+  {
+    id: 'neighbor-owen',
+    name: 'Owen Blake',
+    initials: 'OB',
+    street: '7 Willow Court',
+    isYou: false,
+    offers: ['Extension cord', 'Hedge trimmer'],
+    longitude: -73.9831,
+    latitude: 40.6672,
+  },
 ]
 
 export function sceneResidentById(id: string) {
   return sceneResidents.find((resident) => resident.id === id)
+}
+
+export function blockPin(x: number, y: number) {
+  return {
+    longitude: -73.980476 + x * 0.00045,
+    latitude: 40.667858 + y * 0.00035,
+  }
+}
+
+/** Room for the city-scale block grid, projected onto the same map origin. */
+export function listingMapBounds(): [[number, number], [number, number]] {
+  const westPin = blockPin(-500, 0)
+  const eastPin = blockPin(500, 0)
+  const southPin = blockPin(0, -500)
+  const northPin = blockPin(0, 500)
+  return [
+    [westPin.longitude - 0.02, southPin.latitude - 0.02],
+    [eastPin.longitude + 0.02, northPin.latitude + 0.02],
+  ]
+}
+
+export function residentsFromListings(
+  you: { id: string; name: string; initials: string; street: string },
+  items: readonly { resident_id: string; resident_name: string; x?: number; y?: number; catalog_item: string; catalog_name?: string; willing_to_lend?: boolean }[],
+): SceneResident[] {
+  const people = new Map<string, SceneResident>()
+  people.set(you.id, {
+    id: you.id,
+    name: you.name,
+    initials: you.initials,
+    street: you.street,
+    isYou: true,
+    offers: [],
+    ...blockPin(0, 0),
+  })
+  for (const item of items) {
+    if (item.willing_to_lend === false) continue
+    const name = item.catalog_name || item.catalog_item
+    const pin = blockPin(Number(item.x) || 0, Number(item.y) || 0)
+    const existing = people.get(item.resident_id)
+    if (!existing) {
+      const words = item.resident_name.split(/\s+/).filter(Boolean)
+      const initials = words.length > 1 ? `${words[0][0]}${words[words.length - 1][0]}` : (words[0]?.slice(0, 2) ?? '')
+      people.set(item.resident_id, {
+        id: item.resident_id,
+        name: item.resident_name,
+        initials: initials.toUpperCase(),
+        street: '',
+        isYou: item.resident_id === you.id,
+        offers: name ? [name] : [],
+        ...pin,
+      })
+      continue
+    }
+    if (name && !existing.offers?.includes(name)) {
+      people.set(item.resident_id, { ...existing, offers: [...(existing.offers ?? []), name] })
+    }
+  }
+  return [...people.values()]
+}
+
+export function shareLinksBetween(loans: readonly LoanRequest[], youId: string): ShareLink[] {
+  return loans.flatMap((loan) => {
+    if (loan.status === 'Returned') return []
+    const fromId = loan.borrowerId && loan.borrowerId !== 'resident-avery' ? loan.borrowerId : youId
+    const toId = loan.lenderId === 'resident-avery' ? youId : loan.lenderId
+    if (!fromId || !toId || fromId === toId) return []
+    return [
+      {
+        id: loan.id,
+        fromId,
+        toId,
+        itemName: loan.itemName,
+        status: loan.status,
+        active: loan.status !== 'Requested',
+      },
+    ]
+  })
 }
 
 /** Bounds that frame every demo pin. */
