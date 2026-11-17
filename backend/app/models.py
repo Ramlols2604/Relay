@@ -146,3 +146,13 @@ class Reconciliation(SQLModel, table=True):
     attempts: int = 0
     last_error: str = ""
     created_at: datetime
+
+
+class AuditLog(SQLModel, table=True):
+    id: str = Field(primary_key=True)
+    at: datetime
+    actor: str
+    action: str
+    target_type: str
+    target_id: str
+    detail: str = ""

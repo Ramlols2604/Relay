@@ -3,6 +3,7 @@ from datetime import datetime
 
 from fastapi import Depends, FastAPI, HTTPException
 
+from app.admin import router as admin_router
 from app.auth import current_actor, same_resident
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
@@ -531,6 +532,7 @@ def create_app() -> FastAPI:
     ):
         return garden_count(session)
 
+    app.include_router(admin_router)
     return app
 
 

@@ -92,3 +92,9 @@ def backboard_api_key() -> str:
 
 def backboard_model() -> str:
     return os.environ.get("BACKBOARD_MODEL", "gemini-2.5-flash").strip() or "gemini-2.5-flash"
+
+
+def admin_user_ids() -> set[str]:
+    """Clerk user ids allowed to use /api/admin, from RELAY_ADMIN_USER_IDS (comma separated)."""
+    raw = os.environ.get("RELAY_ADMIN_USER_IDS", "")
+    return {part.strip() for part in raw.split(",") if part.strip()}
