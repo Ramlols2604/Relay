@@ -21,6 +21,7 @@ import {
   loanStatusSteps,
   type LoanRequest,
 } from '../data/lending.ts'
+import { GardenTile } from '../components/GardenTile.tsx'
 import { SharedDemandCard } from '../components/SharedDemandCard.tsx'
 import { useHandoffs } from '../state/handoffStore.ts'
 import { useLoanRequests } from '../state/loanStore.ts'
@@ -86,6 +87,7 @@ export function ActivityPage() {
         <p className="hint">
           {activeCount} active · {completedCount} completed
         </p>
+        <GardenTile />
         <div className="activity-filters" role="group" aria-label="Filter activities">
           <FilterButton
             active={filter === 'active'}

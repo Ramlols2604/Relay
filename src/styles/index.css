@@ -4504,3 +4504,17 @@
 .hood-map .mapboxgl-ctrl-attrib a {
   color: var(--relay-color-ink-soft);
 }
+
+.garden-tile {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin: 0;
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--ink-soft, #3b5b4a);
+}
+
+.garden-tile-value {
+  font-weight: 800;
+}
