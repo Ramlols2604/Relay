@@ -17,6 +17,8 @@ from app.logic import (
     create_loan,
     decline_handoff,
     garden_count,
+    join_group_buy,
+    leave_group_buy,
     handle_chat,
     create_shelf_item,
     delete_shelf_item,
@@ -56,6 +58,17 @@ class ResidentIn(BaseModel):
     short_name: str | None = None
     x: float = 0
     y: float = 0
+
+
+class GroupBuyIn(BaseModel):
+    resident_id: str | None = None
+
+
+def _member(actor: str | None, body: GroupBuyIn) -> str:
+    resident = same_resident(actor, body.resident_id) if body.resident_id else actor
+    if resident is None:
+        raise HTTPException(status_code=422, detail="resident_id is required")
+    return resident
 
 
 class ChatIn(BaseModel):
@@ -486,10 +499,30 @@ def create_app() -> FastAPI:
     @app.post("/api/shared-demand/{catalog_item_id}/group-buy")
     def post_group_buy(
         catalog_item_id: str,
+        body: GroupBuyIn | None = None,
         session: Session = Depends(get_session),
-        _actor: str | None = Depends(current_actor),
+        actor: str | None = Depends(current_actor),
     ):
-        return start_group_buy(session, catalog_item_id)
+        resident = same_resident(actor, body.resident_id) if body and body.resident_id else actor
+        return start_group_buy(session, catalog_item_id, resident)
+
+    @app.post("/api/shared-demand/{catalog_item_id}/group-buy/join")
+    def post_join_group_buy(
+        catalog_item_id: str,
+        body: GroupBuyIn,
+        session: Session = Depends(get_session),
+        actor: str | None = Depends(current_actor),
+    ):
+        return join_group_buy(session, catalog_item_id, _member(actor, body))
+
+    @app.delete("/api/shared-demand/{catalog_item_id}/group-buy/join")
+    def delete_join_group_buy(
+        catalog_item_id: str,
+        resident_id: str | None = None,
+        session: Session = Depends(get_session),
+        actor: str | None = Depends(current_actor),
+    ):
+        return leave_group_buy(session, catalog_item_id, _member(actor, GroupBuyIn(resident_id=resident_id)))
 
     @app.get("/api/garden")
     def get_garden(

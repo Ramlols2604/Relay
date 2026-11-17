@@ -187,6 +187,8 @@ export type ApiInventory = {
   resident_id?: string
 }
 
+export type ApiGroupBuyMember = { resident_id: string; name: string; initials: string }
+
 export type ApiSharedDemandGroup = {
   catalog_item_id: string
   name: string
@@ -196,6 +198,8 @@ export type ApiSharedDemandGroup = {
   schedule: Record<string, { start: string; end: string }> | null
   unschedulable_request_id: string | null
   group_buy_started: boolean
+  members: ApiGroupBuyMember[]
+  member_share_cents: number | null
   cost: {
     demo_price_cents: number
     households: number

@@ -1159,3 +1159,35 @@ def test_extraction_schema_rejects_bad_payloads_and_stops_at_the_deadline(client
     assert late.quantity == 20
 
 
+
+
+def test_group_buy_join_leave_and_split(client):
+    for resident_id, day in (("avery", "Saturday"), ("jordan", "Sunday"), ("sam", "Friday")):
+        _say(client, resident_id, f"I need a drill {day}")
+        _say(client, resident_id, "yes")
+
+    def group():
+        return client.get("/api/shared-demand").json()["groups"][0]
+
+    assert group()["members"] == []
+    assert group()["member_share_cents"] is None
+    assert client.post("/api/shared-demand/drill/group-buy/join", json={"resident_id": "avery"}).status_code == 409
+
+    assert client.post("/api/shared-demand/drill/group-buy", json={"resident_id": "avery"}).status_code == 200
+    assert [m["resident_id"] for m in group()["members"]] == ["avery"]
+
+    for _ in range(2):
+        joined = client.post("/api/shared-demand/drill/group-buy/join", json={"resident_id": "jordan"})
+        assert joined.status_code == 200
+    assert [m["resident_id"] for m in group()["members"]] == ["avery", "jordan"]
+    assert group()["member_share_cents"] == 3000
+
+    assert client.post("/api/shared-demand/drill/group-buy/join", json={"resident_id": "nobody"}).status_code == 404
+    assert client.post("/api/shared-demand/nope/group-buy/join", json={"resident_id": "avery"}).status_code == 404
+    assert client.post("/api/shared-demand/drill/group-buy/join", json={}).status_code == 422
+
+    left = client.delete("/api/shared-demand/drill/group-buy/join", params={"resident_id": "jordan"})
+    assert left.status_code == 200
+    assert client.delete("/api/shared-demand/drill/group-buy/join", params={"resident_id": "jordan"}).status_code == 200
+    assert [m["resident_id"] for m in group()["members"]] == ["avery"]
+    assert group()["member_share_cents"] == 6000

@@ -2,6 +2,7 @@ import { useEffect, useId, useState } from 'react'
 import { Users } from 'lucide-react'
 import { api } from '../api/client.ts'
 import type { ApiSharedDemand, ApiSharedDemandGroup } from '../api/types.ts'
+import { useShelfResident } from '../state/shelfResidentStore.ts'
 import { GlassCard } from './GlassCard.tsx'
 
 const refreshMs = 10_000
@@ -11,6 +12,7 @@ const dollars = (cents: number) => `$${(cents / 100).toFixed(2)}`
 /** Items several neighbors are asking for, with a mock "group buy" action. */
 export function SharedDemandCard() {
   const headingId = useId()
+  const me = useShelfResident()
   const [demand, setDemand] = useState<ApiSharedDemand | null>(null)
   const [version, setVersion] = useState(0)
   const [busy, setBusy] = useState<string | null>(null)
@@ -37,14 +39,14 @@ export function SharedDemandCard() {
     }
   }, [version])
 
-  const start = async (group: ApiSharedDemandGroup) => {
+  const run = async (id: string, action: () => Promise<unknown>, failure: string) => {
     if (busy) return
-    setBusy(group.catalog_item_id)
+    setBusy(id)
     try {
-      await api.startGroupBuy(group.catalog_item_id)
+      await action()
       setVersion((current) => current + 1)
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : 'Could not start the group buy.')
+      setError(caught instanceof Error ? caught.message : failure)
     } finally {
       setBusy(null)
     }
@@ -82,15 +84,25 @@ export function SharedDemandCard() {
                     {dollars(group.cost.savings_cents)} overall).
                   </p>
                   {done ? (
-                    <p className="activity-success" role="status">
-                      Group buy started
-                    </p>
+                    <GroupBuyMembers
+                      group={group}
+                      me={me}
+                      busy={busy !== null}
+                      onJoin={() =>
+                        void run(group.catalog_item_id, () => api.joinGroupBuy(group.catalog_item_id, me), 'Could not join the group buy.')
+                      }
+                      onLeave={() =>
+                        void run(group.catalog_item_id, () => api.leaveGroupBuy(group.catalog_item_id, me), 'Could not leave the group buy.')
+                      }
+                    />
                   ) : (
                     <button
                       type="button"
                       className="loan-lender"
                       disabled={busy !== null}
-                      onClick={() => void start(group)}
+                      onClick={() =>
+                        void run(group.catalog_item_id, () => api.startGroupBuy(group.catalog_item_id, me), 'Could not start the group buy.')
+                      }
                     >
                       Start a group buy
                     </button>
@@ -108,5 +120,44 @@ export function SharedDemandCard() {
         })}
       </ul>
     </GlassCard>
+  )
+}
+
+function GroupBuyMembers({
+  group,
+  me,
+  busy,
+  onJoin,
+  onLeave,
+}: {
+  group: ApiSharedDemandGroup
+  me: string
+  busy: boolean
+  onJoin: () => void
+  onLeave: () => void
+}) {
+  const joined = group.members.some((member) => member.resident_id === me)
+  return (
+    <>
+      <p className="activity-success" role="status">
+        Group buy started · {group.members.length} {group.members.length === 1 ? 'neighbor' : 'neighbors'} in
+        {group.member_share_cents !== null ? ` · ${dollars(group.member_share_cents)} each` : ''}
+      </p>
+      {group.members.length > 0 ? (
+        <ul className="match-list">
+          {group.members.map((member) => (
+            <li key={member.resident_id} className="match-person">
+              <span className="match-avatar" aria-hidden="true">
+                {member.initials}
+              </span>
+              <span className="match-person-name">{member.resident_id === me ? 'You' : member.name}</span>
+            </li>
+          ))}
+        </ul>
+      ) : null}
+      <button type="button" className="loan-lender" disabled={busy} onClick={joined ? onLeave : onJoin}>
+        {joined ? 'Leave group buy' : 'Join group buy'}
+      </button>
+    </>
   )
 }

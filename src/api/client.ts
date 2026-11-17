@@ -8,6 +8,7 @@ import type {
   ApiLoan,
   ApiProject,
   ApiResident,
+  ApiGroupBuyMember,
   ApiSharedDemand,
 } from './types.ts'
 
@@ -104,9 +105,20 @@ export const api = {
   catalog: () => request<ApiCatalogItem[]>('/api/catalog'),
   activity: () => request<ApiActivity>('/api/activity'),
   sharedDemand: () => request<ApiSharedDemand>('/api/shared-demand'),
-  startGroupBuy: (catalogItemId: string) =>
+  startGroupBuy: (catalogItemId: string, resident?: string) =>
     post<{ catalog_item_id: string; started: boolean; mock: boolean }>(
       `/api/shared-demand/${encodeURIComponent(catalogItemId)}/group-buy`,
+      resident ? { resident_id: resident } : undefined,
+    ),
+  joinGroupBuy: (catalogItemId: string, resident: string) =>
+    post<{ catalog_item_id: string; members: ApiGroupBuyMember[] }>(
+      `/api/shared-demand/${encodeURIComponent(catalogItemId)}/group-buy/join`,
+      { resident_id: resident },
+    ),
+  leaveGroupBuy: (catalogItemId: string, resident: string) =>
+    request<{ catalog_item_id: string; members: ApiGroupBuyMember[] }>(
+      `/api/shared-demand/${encodeURIComponent(catalogItemId)}/group-buy/join?resident_id=${encodeURIComponent(resident)}`,
+      { method: 'DELETE' },
     ),
   garden: () => request<{ count: number }>('/api/garden'),
 

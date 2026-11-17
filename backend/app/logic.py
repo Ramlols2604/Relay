@@ -17,6 +17,7 @@ from app.models import (
     CatalogItem,
     GardenEvent,
     GroupBuy,
+    GroupBuyMember,
     Handoff,
     HandoffAllocation,
     Loan,
@@ -383,6 +384,7 @@ def shared_demand(session: Session) -> dict:
         groups.setdefault(request["catalog_item_id"], []).append(request)
     snowflake = inventory["snowflake"]
     started_items = {row.catalog_item_id for row in session.exec(select(GroupBuy)).all()}
+    members_by_item = _group_buy_members(session)
     results = []
     for item_id, requests in groups.items():
         if len(requests) < 2:
@@ -408,6 +410,12 @@ def shared_demand(session: Session) -> dict:
             "schedule": schedule,
             "unschedulable_request_id": blocked,
             "group_buy_started": item_id in started_items,
+            "members": members_by_item.get(item_id, []),
+            "member_share_cents": (
+                item.demo_price_cents // len(members_by_item[item_id])
+                if item and members_by_item.get(item_id)
+                else None
+            ),
             "cost": _cost(item, len(requests)) if shared and item else None,
             "requests": [_public_request(row) for row in requests],
         }
@@ -415,8 +423,10 @@ def shared_demand(session: Session) -> dict:
     return {"snowflake": snowflake, "groups": results}
 
 
-def start_group_buy(session: Session, catalog_item_id: str) -> dict:
+def start_group_buy(session: Session, catalog_item_id: str, resident_id: str | None = None) -> dict:
     _catalog_item(session, catalog_item_id)
+    if resident_id is not None:
+        _resident(session, resident_id)
     existing = session.exec(
         select(GroupBuy).where(GroupBuy.catalog_item_id == catalog_item_id)
     ).first()
@@ -428,7 +438,68 @@ def start_group_buy(session: Session, catalog_item_id: str) -> dict:
         )
         session.add(existing)
         session.commit()
+    if resident_id is not None:
+        _add_member(session, catalog_item_id, resident_id)
     return {"catalog_item_id": catalog_item_id, "started": True, "mock": True}
+
+
+def join_group_buy(session: Session, catalog_item_id: str, resident_id: str) -> dict:
+    _catalog_item(session, catalog_item_id)
+    _resident(session, resident_id)
+    started = session.exec(
+        select(GroupBuy).where(GroupBuy.catalog_item_id == catalog_item_id)
+    ).first()
+    if started is None:
+        raise HTTPException(status_code=409, detail="Start the group buy before joining it")
+    _add_member(session, catalog_item_id, resident_id)
+    return {"catalog_item_id": catalog_item_id, "members": _group_buy_members(session).get(catalog_item_id, [])}
+
+
+def leave_group_buy(session: Session, catalog_item_id: str, resident_id: str) -> dict:
+    _catalog_item(session, catalog_item_id)
+    row = session.exec(
+        select(GroupBuyMember).where(
+            GroupBuyMember.catalog_item_id == catalog_item_id,
+            GroupBuyMember.resident_id == resident_id,
+        )
+    ).first()
+    if row is not None:
+        session.delete(row)
+        session.commit()
+    return {"catalog_item_id": catalog_item_id, "members": _group_buy_members(session).get(catalog_item_id, [])}
+
+
+def _add_member(session: Session, catalog_item_id: str, resident_id: str) -> None:
+    present = session.exec(
+        select(GroupBuyMember).where(
+            GroupBuyMember.catalog_item_id == catalog_item_id,
+            GroupBuyMember.resident_id == resident_id,
+        )
+    ).first()
+    if present is None:
+        session.add(
+            GroupBuyMember(
+                id=uuid4().hex,
+                catalog_item_id=catalog_item_id,
+                resident_id=resident_id,
+                created_at=now(),
+            )
+        )
+        session.commit()
+
+
+def _group_buy_members(session: Session) -> dict[str, list[dict]]:
+    rows = session.exec(select(GroupBuyMember).order_by(GroupBuyMember.created_at)).all()
+    residents = {row.id: row for row in session.exec(select(Resident)).all()}
+    result: dict[str, list[dict]] = {}
+    for row in rows:
+        resident = residents.get(row.resident_id)
+        if resident is None:
+            continue
+        result.setdefault(row.catalog_item_id, []).append(
+            {"resident_id": resident.id, "name": resident.name, "initials": resident.initials}
+        )
+    return result
 
 
 def inventory_view(session: Session, resident_id: str | None = None) -> dict:

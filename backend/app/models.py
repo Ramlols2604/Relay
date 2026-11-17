@@ -103,6 +103,13 @@ class GroupBuy(SQLModel, table=True):
     created_at: datetime
 
 
+class GroupBuyMember(SQLModel, table=True):
+    id: str = Field(primary_key=True)
+    catalog_item_id: str
+    resident_id: str
+    created_at: datetime
+
+
 class ShelfItem(SQLModel, table=True):
     id: str = Field(primary_key=True)
     resident_id: str
