@@ -18,6 +18,12 @@ from fastapi.testclient import TestClient
 
 from app.db import reset_db
 from app.main import app
+from tests.frozen_clock import freeze
+
+
+@pytest.fixture(autouse=True)
+def frozen_clock(monkeypatch):
+    freeze(monkeypatch)
 
 
 @pytest.fixture

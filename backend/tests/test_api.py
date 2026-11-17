@@ -1,7 +1,7 @@
 from sqlmodel import select
 
 from app.catalog import BOOKSHELF_TOOLS
-from app.clock import now as utcnow
+from app import clock
 from app.db import session_scope
 from app.extract import Extraction, _extraction_from_payload
 from app.models import CatalogItem
@@ -38,7 +38,7 @@ def test_project_payload_keeps_tools_outside_the_catalog(client):
         "intent": "project",
         "items": [{"name": "Socket set"}, {"name": "Drill"}, {"name": "socket  set"}, {"name": "Car jack"}],
     }
-    extraction = _extraction_from_payload(payload, "building a car", _catalog(), utcnow())
+    extraction = _extraction_from_payload(payload, "building a car", _catalog(), clock.now())
     assert extraction.intent == "project"
     assert extraction.item_ids == ["drill"]
     assert extraction.extra_names == ["Socket set", "Car jack"]
@@ -46,7 +46,7 @@ def test_project_payload_keeps_tools_outside_the_catalog(client):
 
 def test_need_payload_ignores_tools_outside_the_catalog(client):
     payload = {"intent": "need", "items": [{"name": "Socket set"}]}
-    assert _extraction_from_payload(payload, "I need a socket set", _catalog(), utcnow()) is None
+    assert _extraction_from_payload(payload, "I need a socket set", _catalog(), clock.now()) is None
 
 
 def test_fallback_reads_fixing_as_a_project(client):
@@ -189,3 +189,9 @@ def test_my_stuff_and_neighborhood_are_empty_without_snowflake(client):
     block = client.get("/api/neighborhood").json()
     assert block["snowflake"] == "not_configured"
     assert block["items"] == []
+
+
+def test_app_clock_is_frozen_for_tests():
+    from tests.frozen_clock import FROZEN_NOW
+
+    assert clock.now() == FROZEN_NOW
