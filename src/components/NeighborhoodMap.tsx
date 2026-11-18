@@ -1,15 +1,31 @@
 import { useEffect, useId, useRef, useState } from 'react'
-import type { GeoJSONSource, Map as MapboxMap, Marker } from 'mapbox-gl/esm'
+import type { GeoJSONSource, Map as MapboxMap, Marker, Popup } from 'mapbox-gl/esm'
 import 'mapbox-gl/dist/mapbox-gl.css'
+import { api } from '../api/client.ts'
+import type { ApiSampleListing } from '../api/types.ts'
+import { mapboxAccessToken } from '../data/geocode.ts'
 import {
   demoMapBackdrop,
   linksForResident,
   listingMapBounds,
+  type MapOrigin,
   type SceneResident,
   type ShareLink,
 } from '../data/neighborhood.ts'
+import {
+  milesToLatDegrees,
+  milesToLngDegrees,
+  RADIUS_QUERY_DEBOUNCE_MS,
+  type RadiusMiles,
+} from '../data/searchRadius.ts'
 
 const MAP_STYLE = 'mapbox://styles/mapbox/streets-v12'
+const SAMPLE_SOURCE = 'sample-listings'
+const RADIUS_SOURCE = 'search-radius'
+const US_MAX_BOUNDS: [[number, number], [number, number]] = [
+  [-179.5, 18],
+  [-66, 72],
+]
 
 type NeighborhoodMapProps = {
   residents: readonly SceneResident[]
@@ -20,6 +36,18 @@ type NeighborhoodMapProps = {
   onSelectResident: (id: string) => void
   onSelectLink: (id: string) => void
   emptyMessage: string | null
+  /** Geocoded center for the signed-in address, or the demo Park Slope origin. */
+  mapOrigin: MapOrigin
+  mapLabel: string
+  usingDemoBackdrop: boolean
+  tokenMissingMessage: string | null
+  /** When true, load clustered sample listings for the current map view. */
+  showSampleListings?: boolean
+  /** Search radius in miles (circle + /api/listings radius query). */
+  radiusMiles?: RadiusMiles
+  /** Center for radius queries — verified profile lat/lng when available. */
+  searchCenter?: { latitude: number; longitude: number } | null
+  onSampleCountChange?: (count: number) => void
 }
 
 type MapboxModule = typeof import('mapbox-gl/esm')
@@ -33,19 +61,34 @@ export function NeighborhoodMap({
   onSelectResident,
   onSelectLink,
   emptyMessage,
+  mapOrigin,
+  mapLabel,
+  usingDemoBackdrop,
+  tokenMissingMessage,
+  showSampleListings = false,
+  radiusMiles = 2,
+  searchCenter = null,
+  onSampleCountChange,
 }: NeighborhoodMapProps) {
-  const token = mapboxToken()
+  const token = mapboxAccessToken()
   const statusId = useId()
   const containerRef = useRef<HTMLDivElement>(null)
   const mapRef = useRef<MapboxMap | null>(null)
   const markersRef = useRef<Marker[]>([])
+  const samplePopupRef = useRef<Popup | null>(null)
   const handlersRef = useRef({ onSelectResident, onSelectLink })
   const linksRef = useRef(links)
   const residentsRef = useRef(residents)
   const selectedLinkRef = useRef(selectedLinkId)
   const selectedIdRef = useRef(selectedId)
+  const originRef = useRef(mapOrigin)
+  const showSampleRef = useRef(showSampleListings)
+  const radiusRef = useRef(radiusMiles)
+  const searchCenterRef = useRef(searchCenter)
+  const sampleCountCb = useRef(onSampleCountChange)
   const [ready, setReady] = useState(false)
   const [failed, setFailed] = useState(false)
+  const [sampleCount, setSampleCount] = useState(0)
 
   useEffect(() => {
     handlersRef.current = { onSelectResident, onSelectLink }
@@ -53,7 +96,24 @@ export function NeighborhoodMap({
     residentsRef.current = residents
     selectedLinkRef.current = selectedLinkId
     selectedIdRef.current = selectedId
-  }, [onSelectResident, onSelectLink, links, residents, selectedLinkId, selectedId])
+    originRef.current = mapOrigin
+    showSampleRef.current = showSampleListings
+    radiusRef.current = radiusMiles
+    searchCenterRef.current = searchCenter
+    sampleCountCb.current = onSampleCountChange
+  }, [
+    onSelectResident,
+    onSelectLink,
+    links,
+    residents,
+    selectedLinkId,
+    selectedId,
+    mapOrigin,
+    showSampleListings,
+    radiusMiles,
+    searchCenter,
+    onSampleCountChange,
+  ])
 
   useEffect(() => {
     const container = containerRef.current
@@ -62,6 +122,7 @@ export function NeighborhoodMap({
     let map: MapboxMap | null = null
     let cancelled = false
     let timer = 0
+    const bounds = listingMapBounds(mapOrigin)
 
     void import('mapbox-gl/esm')
       .then((mapboxgl) => {
@@ -75,16 +136,19 @@ export function NeighborhoodMap({
           if (!cancelled && !mapRef.current) setFailed(true)
         }, 15000)
         const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches
-        const [[west, south], [east, north]] = listingMapBounds()
+        const [[west, south], [east, north]] = bounds
+        // Prefer not to phone home — drop Mapbox telemetry when the SDK exposes it.
+        const config = (mapboxgl as MapboxModule & { config?: { EVENTS_URL?: string } }).config
+        if (config) config.EVENTS_URL = ''
         map = new mapboxgl.Map({
           accessToken: token,
           container,
           style: MAP_STYLE,
-          center: [(west + east) / 2, (south + north) / 2],
+          center: [mapOrigin.longitude, mapOrigin.latitude],
           zoom: 13,
           minZoom: 10,
           maxZoom: demoMapBackdrop.maxZoom,
-          maxBounds: listingMapBounds(),
+          maxBounds: bounds,
           minPitch: 0,
           maxPitch: 0,
           pitchWithRotate: false,
@@ -95,6 +159,13 @@ export function NeighborhoodMap({
           fadeDuration: reduceMotion ? 0 : 280,
           attributionControl: true,
           logoPosition: 'bottom-left',
+          collectResourceTiming: false,
+          transformRequest: (url) => {
+            if (/events\.mapbox\.com/i.test(url)) {
+              return { url: 'data:text/plain,', headers: {} }
+            }
+            return { url }
+          },
         })
         map.addControl(
           new mapboxgl.NavigationControl({ showCompass: false, visualizePitch: false }),
@@ -111,19 +182,28 @@ export function NeighborhoodMap({
           if (cancelled || !map) return
           window.clearTimeout(timer)
           bumpSize()
-          map.fitBounds(listingMapBounds(), {
-            padding: viewPadding(),
-            maxZoom: 14,
-            duration: 0,
-          })
+          map.fitBounds(
+            [
+              [west, south],
+              [east, north],
+            ],
+            {
+              padding: viewPadding(),
+              maxZoom: 14,
+              duration: 0,
+            },
+          )
           bumpSize()
           tintWater(map)
           ensureLinkLayers(map)
+          ensureSampleLayers(map)
+          ensureRadiusLayer(map)
           const source = map.getSource('share-links')
           if (isGeoJsonSource(source)) {
             source.setData(linksGeoJson(residentsRef.current, linksRef.current, selectedLinkRef.current))
           }
           bindLinkClicks(map, handlersRef)
+          bindSampleClicks(map, samplePopupRef)
           mapRef.current = map
           setReady(true)
           requestAnimationFrame(bumpSize)
@@ -132,6 +212,9 @@ export function NeighborhoodMap({
 
         map.on('error', (event) => {
           if (cancelled) return
+          // Telemetry/events failures are noisy and do not mean the basemap is unusable.
+          const target = 'url' in (event.error ?? {}) ? String((event.error as { url?: string }).url ?? '') : ''
+          if (/events\.mapbox\.com/i.test(target)) return
           if (isAuthFailure(event.error) || isMapLoadFailure(event.error)) setFailed(true)
         })
 
@@ -152,7 +235,8 @@ export function NeighborhoodMap({
       map?.remove()
       if (mapRef.current === map) mapRef.current = null
     }
-  }, [token, failed])
+    // Recreate when the geocoded (or demo) origin changes.
+  }, [token, failed, mapOrigin])
 
   const markerSignature = [
     residents.map((resident) => resident.id).join(','),
@@ -198,6 +282,112 @@ export function NeighborhoodMap({
     source.setData(linksGeoJson(residents, links, selectedLinkId))
   }, [ready, residents, links, selectedLinkId])
 
+  useEffect(() => {
+    const map = mapRef.current
+    if (!map || !ready) return
+    const localBounds = listingMapBounds(originRef.current)
+    if (showSampleListings) {
+      map.setMaxBounds(US_MAX_BOUNDS)
+      map.setMinZoom(3)
+      return
+    }
+    map.setMaxBounds(localBounds)
+    map.setMinZoom(10)
+    samplePopupRef.current?.remove()
+    samplePopupRef.current = null
+    const source = map.getSource(SAMPLE_SOURCE)
+    if (isGeoJsonSource(source)) {
+      source.setData({ type: 'FeatureCollection', features: [] })
+    }
+    const clear = window.setTimeout(() => {
+      setSampleCount(0)
+      sampleCountCb.current?.(0)
+    }, 0)
+    return () => window.clearTimeout(clear)
+  }, [ready, showSampleListings])
+
+  // Draw / fit the radius circle immediately when the slider or center changes.
+  useEffect(() => {
+    const map = mapRef.current
+    if (!map || !ready) return
+    ensureRadiusLayer(map)
+    const center = searchCenter ?? {
+      latitude: mapOrigin.latitude,
+      longitude: mapOrigin.longitude,
+    }
+    const source = map.getSource(RADIUS_SOURCE)
+    if (isGeoJsonSource(source)) {
+      source.setData(radiusCircleGeoJson(center.longitude, center.latitude, radiusMiles))
+    }
+    const dLat = milesToLatDegrees(radiusMiles)
+    const dLng = milesToLngDegrees(radiusMiles, center.latitude)
+    const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches
+    map.fitBounds(
+      [
+        [center.longitude - dLng, center.latitude - dLat],
+        [center.longitude + dLng, center.latitude + dLat],
+      ],
+      {
+        padding: viewPadding(),
+        maxZoom: 14,
+        duration: reduceMotion ? 0 : 350,
+      },
+    )
+  }, [ready, radiusMiles, searchCenter, mapOrigin.latitude, mapOrigin.longitude])
+
+  // Re-query sample listings after the slider settles (300 ms).
+  useEffect(() => {
+    const map = mapRef.current
+    if (!map || !ready || !showSampleListings) return
+
+    let cancelled = false
+    const center = searchCenter ?? {
+      latitude: mapOrigin.latitude,
+      longitude: mapOrigin.longitude,
+    }
+    const timer = window.setTimeout(() => {
+      if (cancelled || mapRef.current !== map || !showSampleRef.current) return
+      void api
+        .listings(
+          {
+            radiusMiles,
+            latitude: center.latitude,
+            longitude: center.longitude,
+          },
+          2000,
+        )
+        .then((body) => {
+          if (cancelled || mapRef.current !== map || !showSampleRef.current) return
+          const source = map.getSource(SAMPLE_SOURCE)
+          if (!isGeoJsonSource(source)) return
+          source.setData(sampleListingsGeoJson(body.items))
+          setSampleCount(body.count)
+          sampleCountCb.current?.(body.count)
+        })
+        .catch(() => {
+          if (cancelled || !showSampleRef.current) return
+          const source = map.getSource(SAMPLE_SOURCE)
+          if (isGeoJsonSource(source)) {
+            source.setData({ type: 'FeatureCollection', features: [] })
+          }
+          setSampleCount(0)
+          sampleCountCb.current?.(0)
+        })
+    }, RADIUS_QUERY_DEBOUNCE_MS)
+
+    return () => {
+      cancelled = true
+      window.clearTimeout(timer)
+    }
+  }, [
+    ready,
+    showSampleListings,
+    radiusMiles,
+    searchCenter,
+    mapOrigin.latitude,
+    mapOrigin.longitude,
+  ])
+
   function resetView() {
     const map = mapRef.current
     if (!map) return
@@ -207,7 +397,7 @@ export function NeighborhoodMap({
       if (mapRef.current !== map) return
       const frame = new mapboxgl.LngLatBounds()
       if (people.length === 0) {
-        const [[west, south], [east, north]] = listingMapBounds()
+        const [[west, south], [east, north]] = listingMapBounds(originRef.current)
         frame.extend([west, south])
         frame.extend([east, north])
       } else {
@@ -228,9 +418,10 @@ export function NeighborhoodMap({
       <MapFallback
         missingToken={!token}
         reason={
-          token
+          tokenMissingMessage ||
+          (token
             ? 'Mapbox rejected the token or the style did not load. Check VITE_MAPBOX_ACCESS_TOKEN, its URL restrictions, and your connection.'
-            : 'Add VITE_MAPBOX_ACCESS_TOKEN to .env.local and restart Relay. Use a public Mapbox token, and keep it out of source control.'
+            : 'Add VITE_MAPBOX_ACCESS_TOKEN to .env.local and restart Relay. Use a public Mapbox token, and keep it out of source control.')
         }
         residents={residents}
         links={links}
@@ -249,13 +440,28 @@ export function NeighborhoodMap({
         ref={containerRef}
         className="hood-map-canvas"
         role="region"
-        aria-label={`Map of ${demoMapBackdrop.name} with fictional demo residents`}
+        aria-label={
+          usingDemoBackdrop
+            ? `Map of ${mapLabel} (demo backdrop)`
+            : `Map centered on ${mapLabel}`
+        }
       />
       <div className="hood-map-toolbar">
         <button type="button" className="hood-reset" onClick={resetView} disabled={!ready}>
           Neighborhood view
         </button>
+        {showSampleListings ? (
+          <span className="hood-sample-count" role="status">
+            {sampleCount} demo listing{sampleCount === 1 ? '' : 's'} within {radiusMiles}{' '}
+            mile{radiusMiles === 1 ? '' : 's'}
+          </span>
+        ) : null}
       </div>
+      {usingDemoBackdrop ? (
+        <p className="hood-map-backdrop-note" role="status">
+          Showing the demo map area. Set your street and city in Edit profile so Relay can center on you.
+        </p>
+      ) : null}
       {emptyMessage ? <p className="hood-map-empty">{emptyMessage}</p> : null}
       {ready ? null : (
         <p className="hood-map-pending" id={statusId} role="status">
@@ -436,7 +642,7 @@ function markerLabel(resident: SceneResident, lending: boolean, active: boolean,
   const who = resident.isYou ? `${resident.name}, you` : resident.name
   const lend = lending ? 'Has items to lend.' : 'Nothing listed to lend.'
   const loan = active ? ' In an active loan.' : pending ? ' Has a loan request.' : ''
-  return `${who}. Fictional demo resident. ${lend}${loan}`
+  return `${who}. ${lend}${loan}`
 }
 
 function loanPipLabel(links: readonly ShareLink[]) {
@@ -451,11 +657,6 @@ function firstName(name: string) {
 
 function viewPadding() {
   return { top: 72, right: 56, bottom: 78, left: 48 }
-}
-
-function mapboxToken() {
-  const value = import.meta.env.VITE_MAPBOX_ACCESS_TOKEN
-  return typeof value === 'string' ? value.trim() : ''
 }
 
 function isAuthFailure(error: unknown) {
@@ -485,6 +686,217 @@ function tintWater(map: MapboxMap) {
   } catch {
     // The streets style may rename this layer. Leave the default water color.
   }
+}
+
+function ensureRadiusLayer(map: MapboxMap) {
+  if (map.getSource(RADIUS_SOURCE)) return
+  map.addSource(RADIUS_SOURCE, {
+    type: 'geojson',
+    data: { type: 'FeatureCollection', features: [] },
+  })
+  map.addLayer({
+    id: 'search-radius-fill',
+    type: 'fill',
+    source: RADIUS_SOURCE,
+    paint: {
+      'fill-color': '#14b8a6',
+      'fill-opacity': 0.08,
+    },
+  })
+  map.addLayer({
+    id: 'search-radius-line',
+    type: 'line',
+    source: RADIUS_SOURCE,
+    paint: {
+      'line-color': '#0c749f',
+      'line-width': 2,
+      'line-opacity': 0.75,
+    },
+  })
+}
+
+function radiusCircleGeoJson(longitude: number, latitude: number, radiusMiles: number) {
+  const points = 64
+  const coordinates: [number, number][] = []
+  for (let i = 0; i <= points; i += 1) {
+    const bearing = (i / points) * 2 * Math.PI
+    const dLat = milesToLatDegrees(radiusMiles) * Math.cos(bearing)
+    const dLng = milesToLngDegrees(radiusMiles, latitude) * Math.sin(bearing)
+    coordinates.push([longitude + dLng, latitude + dLat])
+  }
+  return {
+    type: 'FeatureCollection' as const,
+    features: [
+      {
+        type: 'Feature' as const,
+        properties: {},
+        geometry: { type: 'Polygon' as const, coordinates: [coordinates] },
+      },
+    ],
+  }
+}
+
+function ensureSampleLayers(map: MapboxMap) {
+  if (map.getSource(SAMPLE_SOURCE)) return
+  map.addSource(SAMPLE_SOURCE, {
+    type: 'geojson',
+    data: { type: 'FeatureCollection', features: [] },
+    cluster: true,
+    clusterMaxZoom: 14,
+    clusterRadius: 52,
+  })
+  map.addLayer({
+    id: 'sample-clusters',
+    type: 'circle',
+    source: SAMPLE_SOURCE,
+    filter: ['has', 'point_count'],
+    paint: {
+      'circle-color': '#0c749f',
+      'circle-radius': ['step', ['get', 'point_count'], 16, 25, 20, 100, 26],
+      'circle-opacity': 0.82,
+      'circle-stroke-width': 2,
+      'circle-stroke-color': '#ffffff',
+    },
+  })
+  map.addLayer({
+    id: 'sample-cluster-count',
+    type: 'symbol',
+    source: SAMPLE_SOURCE,
+    filter: ['has', 'point_count'],
+    layout: {
+      'text-field': ['get', 'point_count_abbreviated'],
+      'text-size': 12,
+      'text-font': ['DIN Pro Medium', 'Arial Unicode MS Bold'],
+    },
+    paint: { 'text-color': '#ffffff' },
+  })
+  map.addLayer({
+    id: 'sample-unclustered',
+    type: 'circle',
+    source: SAMPLE_SOURCE,
+    filter: ['!', ['has', 'point_count']],
+    paint: {
+      'circle-color': '#14b8a6',
+      'circle-radius': 7,
+      'circle-stroke-width': 2,
+      'circle-stroke-color': '#ffffff',
+    },
+  })
+}
+
+type SampleMapFeature = {
+  properties?: Record<string, unknown> | null
+  geometry?: { type?: string; coordinates?: number[] }
+}
+
+function bindSampleClicks(
+  map: MapboxMap,
+  popupRef: { current: Popup | null },
+) {
+  map.on('click', 'sample-clusters', (event) => {
+    const feature = event.features?.[0] as SampleMapFeature | undefined
+    const clusterId = feature?.properties?.cluster_id
+    const source = map.getSource(SAMPLE_SOURCE)
+    const coords = feature?.geometry?.coordinates
+    if (typeof clusterId !== 'number' || !source || !('getClusterExpansionZoom' in source)) return
+    if (!coords || coords.length < 2) return
+    const center: [number, number] = [Number(coords[0]), Number(coords[1])]
+    ;(source as GeoJSONSource).getClusterExpansionZoom(clusterId, (error, zoom) => {
+      if (error || zoom == null) return
+      map.easeTo({ center, zoom })
+    })
+  })
+
+  map.on('click', 'sample-unclustered', (event) => {
+    const feature = event.features?.[0] as SampleMapFeature | undefined
+    const coords = feature?.geometry?.coordinates
+    if (!feature || feature.geometry?.type !== 'Point' || !coords || coords.length < 2) return
+    const props = feature.properties ?? {}
+    const coordinates: [number, number] = [Number(coords[0]), Number(coords[1])]
+    const html = samplePopupHtml({
+      item: String(props.item ?? 'Item'),
+      city: String(props.city ?? ''),
+      state: String(props.state ?? ''),
+      condition: String(props.condition ?? ''),
+      quantity: Number(props.quantity) || 1,
+      firstName: String(props.first_name ?? ''),
+      lastInitial: String(props.last_initial ?? ''),
+      maxLoanHours: Number(props.max_loan_hours) || 0,
+    })
+    void import('mapbox-gl/esm').then((mapboxgl) => {
+      popupRef.current?.remove()
+      popupRef.current = new mapboxgl.Popup({ offset: 12, closeButton: true, maxWidth: '240px' })
+        .setLngLat(coordinates)
+        .setHTML(html)
+        .addTo(map)
+    })
+  })
+
+  for (const layer of ['sample-clusters', 'sample-unclustered'] as const) {
+    map.on('mouseenter', layer, () => {
+      map.getCanvas().style.cursor = 'pointer'
+    })
+    map.on('mouseleave', layer, () => {
+      map.getCanvas().style.cursor = ''
+    })
+  }
+}
+
+function samplePopupHtml(listing: {
+  item: string
+  city: string
+  state: string
+  condition: string
+  quantity: number
+  firstName: string
+  lastInitial: string
+  maxLoanHours: number
+}) {
+  const place = [listing.city, listing.state].filter(Boolean).join(', ')
+  const lender = [listing.firstName, listing.lastInitial ? `${listing.lastInitial}.` : '']
+    .filter(Boolean)
+    .join(' ')
+  // Demo data only: no contact affordance — this pin never maps to a real resident or loan.
+  return `<div class="hood-sample-popup">
+    <span class="hood-sample-badge">Demo listing</span>
+    <p class="hood-sample-item">${escapeHtml(listing.item)}</p>
+    <p class="hood-sample-meta">${escapeHtml(place)}</p>
+    <p class="hood-sample-meta">${escapeHtml(listing.condition)} · qty ${listing.quantity}</p>
+    ${lender ? `<p class="hood-sample-meta">${escapeHtml(lender)} · up to ${listing.maxLoanHours}h loan</p>` : ''}
+  </div>`
+}
+
+function sampleListingsGeoJson(items: readonly ApiSampleListing[]) {
+  return {
+    type: 'FeatureCollection' as const,
+    features: items.map((item) => ({
+      type: 'Feature' as const,
+      properties: {
+        id: item.id,
+        item: item.item,
+        city: item.city,
+        state: item.state,
+        condition: item.condition,
+        quantity: item.quantity,
+        first_name: item.first_name,
+        last_initial: item.last_initial,
+        max_loan_hours: item.max_loan_hours,
+        is_sample: 1,
+      },
+      geometry: {
+        type: 'Point' as const,
+        coordinates: [item.longitude, item.latitude],
+      },
+    })),
+  }
+}
+
+function escapeHtml(value: string) {
+  return value
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
 }
 
 function ensureLinkLayers(map: MapboxMap) {

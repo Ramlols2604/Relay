@@ -2,14 +2,22 @@ import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
 import { Moon, Search, Sun } from 'lucide-react'
 import { StatusTimeline } from './StatusTimeline.tsx'
 import { useActivityFeed } from '../state/activityFeedStore.ts'
+import { useCurrentResident } from '../state/currentResidentStore.ts'
 import { useShelfResident } from '../state/shelfResidentStore.ts'
 import { kpisFrom, loanSteps, rememberStatuses, sceneFrom, tripsForChanges, type StatusMemory } from '../world/activity.ts'
+import { demoPreviewResidents, worldEmptyCopy } from '../world/demoNeighbors.ts'
 import { describe } from '../world/describe.ts'
+import { haversineMiles, type RadiusMiles } from '../data/searchRadius.ts'
 import { layoutLots, zonesOf } from '../world/layout.ts'
 import { RelayScene } from '../world/scene.ts'
 import { useWorldData } from '../world/useWorldData.ts'
 
 type TableTab = 'loans' | 'neighbors' | 'groupbuys'
+
+type RelayWorldProps = {
+  radiusMiles?: RadiusMiles
+  searchCenter?: { latitude: number; longitude: number } | null
+}
 
 declare global {
   interface Window {
@@ -19,9 +27,10 @@ declare global {
 }
 
 /** A live 3D town of the neighborhood: houses, walkers carrying loans, and what needs attention. */
-export function RelayWorld() {
+export function RelayWorld({ radiusMiles = 2, searchCenter = null }: RelayWorldProps) {
   const headingId = useId()
   const viewer = useShelfResident()
+  const you = useCurrentResident()
   const { activity, error: feedError } = useActivityFeed()
   const data = useWorldData()
 
@@ -35,6 +44,7 @@ export function RelayWorld() {
   const [tab, setTab] = useState<TableTab>('loans')
   const [query, setQuery] = useState('')
   const [clock, setClock] = useState(() => new Date())
+  const [previewDemo, setPreviewDemo] = useState(false)
 
   // Everyone with a loan or handoff in progress gets a house, however far away they are.
   const involved = useMemo(() => {
@@ -50,12 +60,41 @@ export function RelayWorld() {
     for (const buy of data.groupBuys) for (const member of buy.members) ids.add(member.resident_id)
     return ids
   }, [activity, data.groupBuys])
-  // Wait for both the neighbors and the activity before laying out the town, so houses do not move
-  // once the people with loans are known. If the activity cannot load, build the town without it.
-  const loaded = data.residents.length > 0 && (activity !== null || feedError !== null)
-  const lots = useMemo(() => (loaded ? layoutLots(data.residents, viewer, 36, involved) : []), [loaded, data.residents, viewer, involved])
+  // Wait for neighbors, activity, and the first tallies pass before laying out the town.
+  // Tallies (garden + group buys) used to arrive a beat later and rebuild the mesh under an
+  // already-measured click target — that is the flaky 3D house click.
+  const loaded =
+    data.peopleReady &&
+    data.talliesReady &&
+    (activity !== null || feedError !== null)
+  const cityLabel = you.city.trim() || data.residents.find((row) => row.id === viewer)?.city.trim() || ''
+  const residentsForTown = useMemo(() => {
+    const base = (() => {
+      if (!previewDemo) return data.residents
+      const extras = demoPreviewResidents(viewer, cityLabel || 'your city')
+      const seen = new Set(data.residents.map((row) => row.id))
+      return [...data.residents, ...extras.filter((row) => !seen.has(row.id))]
+    })()
+    if (!searchCenter) return base
+    return base.filter((resident) => {
+      if (resident.id === viewer || involved.has(resident.id)) return true
+      const lat = resident.latitude
+      const lng = resident.longitude
+      if (typeof lat !== 'number' || typeof lng !== 'number') return true
+      return haversineMiles(searchCenter.latitude, searchCenter.longitude, lat, lng) <= radiusMiles
+    })
+  }, [cityLabel, data.residents, involved, previewDemo, radiusMiles, searchCenter, viewer])
+  const lots = useMemo(
+    () => (loaded ? layoutLots(residentsForTown, viewer, 36, involved) : []),
+    [loaded, residentsForTown, viewer, involved],
+  )
+  const neighborLots = useMemo(() => lots.filter((lot) => lot.id !== viewer), [lots, viewer])
+  const aloneInCity = loaded && !previewDemo && neighborLots.length === 0
   const housed = useMemo(() => new Set(lots.map((lot) => lot.id)), [lots])
-  const residentMap = useMemo(() => new Map(data.residents.map((resident) => [resident.id, resident])), [data.residents])
+  const residentMap = useMemo(
+    () => new Map(residentsForTown.map((resident) => [resident.id, resident])),
+    [residentsForTown],
+  )
   const zones = useMemo(() => zonesOf(lots), [lots])
   const scene = useMemo(() => sceneFrom(activity, housed, data.names), [activity, housed, data.names])
   const kpis = kpisFrom(activity, data.garden, lots.length)
@@ -88,12 +127,16 @@ export function RelayWorld() {
   }, [])
 
   // Keep the town, the beacons and the walkers in step with the data.
+  // Town geometry key is only house ids + cells + viewer — never garden tallies or listing
+  // counts. Garden flowers update in place so a later tally poll cannot shift click targets.
   useEffect(() => {
     if (!ready) return
-    const key = JSON.stringify([lots.map((lot) => [lot.id, lot.col, lot.row]), viewer, Math.min(60, data.garden)])
+    const key = JSON.stringify([lots.map((lot) => [lot.id, lot.col, lot.row]), viewer])
     if (key !== townKey.current) {
       ready.setTown(lots, viewer, data.garden)
       townKey.current = key
+    } else {
+      ready.setGarden(data.garden)
     }
     ready.setBeacons(scene.beacons)
     ready.setRepeatingTrips(scene.trips)
@@ -231,6 +274,22 @@ export function RelayWorld() {
             <span className="world-kpi-label">Exchanges finished</span>
           </li>
         </ul>
+        {aloneInCity ? (
+          <div className="world-empty" role="status" data-testid="world-empty">
+            <p className="world-empty-copy">{worldEmptyCopy(cityLabel)}</p>
+            <button type="button" className="world-empty-action" onClick={() => setPreviewDemo(true)}>
+              Preview with demo neighbors
+            </button>
+          </div>
+        ) : null}
+        {previewDemo ? (
+          <p className="world-preview-note" role="status">
+            Showing demo neighbors in {cityLabel || 'your city'}.{' '}
+            <button type="button" className="world-preview-clear" onClick={() => setPreviewDemo(false)}>
+              Back to just you
+            </button>
+          </p>
+        ) : null}
         {data.error ? (
           <p className="world-error" role="alert">
             {data.error}

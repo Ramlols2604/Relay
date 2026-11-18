@@ -38,6 +38,29 @@ _booking_lock = threading.Lock()
 ACTIVE_LOAN = ("requested", "confirmed", "picked_up")
 RESERVED_HANDOFF = ("proposed", "confirmed")
 DEMAND_KINDS = ("need", "borrow")
+PROFILE_TEXT_MAX = 120
+
+
+def normalize_profile_street(value: str) -> str:
+    cleaned = (value or "").strip()
+    if not cleaned:
+        raise HTTPException(status_code=422, detail="Street address is required.")
+    if len(cleaned) > PROFILE_TEXT_MAX:
+        raise HTTPException(status_code=422, detail="Street address must be 120 characters or fewer.")
+    return cleaned
+
+
+def normalize_profile_city(value: str) -> str:
+    cleaned = (value or "").strip()
+    if not cleaned:
+        raise HTTPException(status_code=422, detail="City is required.")
+    if len(cleaned) > PROFILE_TEXT_MAX:
+        raise HTTPException(status_code=422, detail="City must be 120 characters or fewer.")
+    return cleaned
+
+
+def profile_onboarded(street: str, city: str) -> bool:
+    return bool(street.strip()) and bool(city.strip())
 
 
 class SlotRequest:
@@ -47,7 +70,13 @@ class SlotRequest:
         self.win_end = win_end
 
 
-def handle_chat(session: Session, resident_id: str, message: str) -> dict:
+def handle_chat(
+    session: Session,
+    resident_id: str,
+    message: str,
+    include_demo_listings: bool = False,
+    radius_miles: float = 2.0,
+) -> dict:
     resident = _resident(session, resident_id)
     catalog = _catalog(session)
     extraction = extract_message(message, catalog)
@@ -55,6 +84,8 @@ def handle_chat(session: Session, resident_id: str, message: str) -> dict:
         return apply_yes(session, resident_id)
     if extraction.intent == "confirm_no":
         return apply_no(session, resident_id)
+    if extraction.intent == "nearby":
+        return _nearby_lenders(session, resident, extraction, catalog, include_demo_listings, radius_miles)
     if extraction.intent == "project":
         if not extraction.item_ids and not extraction.extra_names:
             return {
@@ -157,7 +188,11 @@ def _create_loan_locked(
     quantity: int = 1,
     inventory_id: str | None = None,
 ) -> dict:
+    from app.sample_listings import is_sample_id
+
     _begin_immediate(session)
+    if is_sample_id(inventory_id) or is_sample_id(lender_id) or str(lender_id).startswith("sample:"):
+        raise HTTPException(status_code=400, detail="Sample listings cannot be borrowed.")
     borrower = _resident(session, borrower_id)
     lender = _resident(session, lender_id)
     item = _catalog_item(session, catalog_item_id)
@@ -746,16 +781,22 @@ def _inventory_owner(session: Session, item_id: str) -> str | None:
 
 
 def _save_shelf(session: Session, resident: Resident, item: ShelfItem, created: bool) -> None:
-    previous = snowflake_store.fetch_inventory_row(item.id)
-    if isinstance(previous, dict):
-        previous = dict(previous)
+    previous = None
     attempted = False
     try:
         session.flush()
         if snowflake_store.configured():
             attempted = True
-            _mirror_inventory(resident, item)
+            previous = _mirror_inventory(resident, item)
+            if isinstance(previous, dict):
+                previous = dict(previous)
         _commit_session(session)
+    except snowflake_store.InventorySaveError as exc:
+        session.rollback()
+        previous = dict(exc.previous) if isinstance(exc.previous, dict) else None
+        if attempted:
+            _compensate_remote(session, item.id, previous, created)
+        raise exc.cause from exc
     except Exception:
         session.rollback()
         if attempted:
@@ -849,9 +890,9 @@ def _handoff_party(session: Session, handoff, actor: str) -> bool:
     return any(row.resident_id == actor for row in _allocations(session, handoff.id))
 
 
-def _mirror_inventory(resident: Resident, item: ShelfItem) -> bool:
+def _mirror_inventory(resident: Resident, item: ShelfItem) -> dict | None:
     if not snowflake_store.configured():
-        return False
+        return None
     row = {
         "inventory_id": item.id,
         "resident_id": resident.id,
@@ -867,13 +908,16 @@ def _mirror_inventory(resident: Resident, item: ShelfItem) -> bool:
         "condition_note": item.notes,
     }
     try:
-        snowflake_store.upsert_inventory(row)
+        return snowflake_store.save_inventory_row(row)
+    except snowflake_store.InventorySaveError:
+        raise
     except snowflake_store.SnowflakeError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
-    return True
 
 
 def neighborhood(session: Session, resident_id: str) -> dict:
+    from app.address import is_address_verified
+
     resident = _resident(session, resident_id)
     view = inventory_view(session)
     items = []
@@ -882,10 +926,13 @@ def neighborhood(session: Session, resident_id: str) -> dict:
             continue
         if not _same_city(session, resident.id, row["resident_id"]):
             continue
+        owner = session.get(Resident, row["resident_id"])
+        # Unverified profiles are never shown on other people's maps.
+        if not is_address_verified(owner):
+            continue
         distance = abs(float(row["x"]) - resident.x) + abs(float(row["y"]) - resident.y)
         if distance > DISTANCE_LIMIT:
             continue
-        owner = session.get(Resident, row["resident_id"])
         items.append({**row, "distance": distance, "city": owner.city if owner else ""})
     items.sort(key=lambda row: (row["distance"], row["resident_name"]))
     return {"snowflake": view["snowflake"], "resident_id": resident.id, "items": items}
@@ -1044,6 +1091,141 @@ def _create_project(session, resident, message, extraction, catalog) -> dict:
         "snowflake": "ok" if snowflake else "not_configured",
         "tools": _project_dict(session, project)["tools"],
     }
+
+
+NEARBY_LENDER_LIMIT = 3
+
+
+def _display_name(name: str) -> str:
+    """First name plus last initial ('Jordan Lee' -> 'Jordan L'). Never the full name."""
+    parts = [part for part in (name or "").split() if part]
+    if not parts:
+        return "Neighbor"
+    if len(parts) == 1:
+        return parts[0]
+    return f"{parts[0]} {parts[-1][0]}"
+
+
+def _nearby_lenders(
+    session: Session,
+    resident: Resident,
+    extraction,
+    catalog: list[CatalogItem],
+    include_demo_listings: bool,
+    radius_miles: float,
+) -> dict:
+    """Closest real neighbors (and, optionally, demo listings) lending a catalog item.
+
+    Never includes email, phone, street, or a formatted address: only a display name,
+    distance, and coordinates coarse enough for a map preview.
+    """
+    from app.address import is_address_verified
+    from app.sample_listings import haversine_miles, listings_near
+
+    if not extraction.item_ids:
+        return {
+            "type": "no_match",
+            "message": "Name an item from the catalog, like 'closest ladder'.",
+        }
+    item = next((row for row in catalog if row.id == extraction.item_ids[0]), None)
+    if item is None:
+        return {
+            "type": "no_match",
+            "message": "That item is not in the catalog.",
+        }
+    if not is_address_verified(resident):
+        return {
+            "type": "no_match",
+            "message": "Verify your address first so Relay can find neighbors near you.",
+        }
+    radius = max(0.1, float(radius_miles))
+    origin_lat = float(resident.latitude)
+    origin_lng = float(resident.longitude)
+
+    lenders: list[dict] = []
+    view = inventory_view(session)
+    for row in view["items"]:
+        if row.get("resident_id") == resident.id:
+            continue
+        if not row.get("willing_to_lend"):
+            continue
+        if row.get("catalog_item_id") != item.id:
+            continue
+        if int(row.get("quantity") or 0) <= 0:
+            continue
+        owner = session.get(Resident, row["resident_id"])
+        if owner is None or not is_address_verified(owner):
+            continue
+        distance = haversine_miles(origin_lat, origin_lng, float(owner.latitude), float(owner.longitude))
+        same_city = _same_city(session, resident.id, owner.id)
+        if not same_city and distance > radius:
+            continue
+        lenders.append(
+            {
+                "inventory_id": row.get("inventory_id"),
+                "lender_id": owner.id,
+                "display_name": _display_name(owner.name),
+                "distance_miles": round(distance, 2),
+                "item": item.name,
+                "quantity": int(row.get("quantity") or 0),
+                "condition": row.get("condition") or "",
+                "max_loan_hours": item.default_loan_hours,
+                "available_windows": [],
+                "demo": False,
+                "contact": None,
+                "latitude": owner.latitude,
+                "longitude": owner.longitude,
+            }
+        )
+
+    if include_demo_listings:
+        needle = item.name.strip().lower()
+        for row in listings_near(session, origin_lat, origin_lng, radius, limit=200):
+            if str(row.get("item") or "").strip().lower() != needle:
+                continue
+            name = " ".join(
+                part for part in (str(row.get("first_name") or ""), f"{row.get('last_initial') or ''}.") if part
+            ).strip()
+            lenders.append(
+                {
+                    "inventory_id": row.get("id"),
+                    "lender_id": None,
+                    "display_name": name or "Neighbor",
+                    "distance_miles": round(float(row.get("distance_miles") or 0), 2),
+                    "item": item.name,
+                    "quantity": int(row.get("quantity") or 1),
+                    "condition": row.get("condition") or "",
+                    "max_loan_hours": int(row.get("max_loan_hours") or item.default_loan_hours),
+                    "available_windows": [],
+                    "demo": True,
+                    "contact": None,
+                    "latitude": row.get("latitude"),
+                    "longitude": row.get("longitude"),
+                }
+            )
+
+    lenders.sort(key=lambda row: row["distance_miles"])
+    top = lenders[:NEARBY_LENDER_LIMIT]
+    return {
+        "type": "nearby_lenders",
+        "item": {"id": item.id, "name": item.name},
+        "radius_miles": radius,
+        "include_demo": include_demo_listings,
+        "lenders": top,
+        "message": _nearby_message(item.name, top, radius, include_demo_listings),
+    }
+
+
+def _nearby_message(item_name: str, lenders: list[dict], radius_miles: float, include_demo: bool) -> str:
+    label = item_name.lower()
+    if not lenders:
+        suggestion = "Try widening the search radius"
+        if not include_demo:
+            suggestion += " or turning on demo listings"
+        return f"No neighbors have a {label} within {radius_miles:g} miles. {suggestion}."
+    nearest = lenders[0]
+    distance = nearest["distance_miles"]
+    return f"{nearest['display_name']} has a {label} about {distance:g} mile{'s' if distance != 1 else ''} away."
 
 
 def _draft_request(session, resident, message, extraction, catalog) -> dict:
@@ -1209,18 +1391,23 @@ def _windows_compatible(need: dict, offer: dict) -> bool:
     return overlaps(start, end, other_start, other_end)
 
 
+def normalize_city_key(city: str) -> str:
+    """Case-insensitive city match that ignores spaces ('charlotte ' == 'Charlotte')."""
+    return "".join((city or "").split()).casefold()
+
+
 def _same_city(session: Session, left_id: str, right_id: str) -> bool:
     left = session.get(Resident, left_id)
     right = session.get(Resident, right_id)
     if left is None or right is None or not left.city.strip() or not right.city.strip():
         return False
-    return left.city.casefold() == right.city.casefold()
+    return normalize_city_key(left.city) == normalize_city_key(right.city)
 
 
 def _require_place(borrower: Resident, lender: Resident) -> None:
     if not borrower.city.strip() or not lender.city.strip():
         raise HTTPException(status_code=400, detail="Both people need a city before a loan.")
-    if borrower.city.casefold() != lender.city.casefold():
+    if normalize_city_key(borrower.city) != normalize_city_key(lender.city):
         raise HTTPException(status_code=400, detail="Loans stay in one city.")
     distance = abs(borrower.x - lender.x) + abs(borrower.y - lender.y)
     if distance > DISTANCE_LIMIT:

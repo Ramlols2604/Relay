@@ -1,5 +1,6 @@
 import { useId, useMemo, useState } from 'react'
-import { Bell, Check, Clock, MapPin } from 'lucide-react'
+import { Link } from 'react-router'
+import { Bell, Check, Clock, MapPin, MessageCircle, Package } from 'lucide-react'
 import { GlassCard } from '../components/GlassCard.tsx'
 import { ItemPortrait } from '../components/ItemPortrait.tsx'
 import { StatusBadge, StatusTimeline } from '../components/StatusTimeline.tsx'
@@ -117,9 +118,27 @@ export function ActivityPage() {
           </p>
           <p className="hint">
             {filter === 'active'
-              ? 'Request a loan or arrange a handoff in Chat, then come back here.'
-              : 'Finished loans and handoffs will land in this list.'}
+              ? 'Activity fills up when neighbors request loans or handoffs. Start from Chat or list something on your shelf.'
+              : 'Finished loans and handoffs will land here once you complete a borrow cycle.'}
           </p>
+          <div className="activity-empty-actions">
+            <Link to="/chat" className="tool-primary activity-empty-link">
+              <MessageCircle aria-hidden="true" size={16} />
+              Ask in Chat
+            </Link>
+            <Link to="/my-stuff" className="chat-tool-btn activity-empty-link">
+              <Package aria-hidden="true" size={16} />
+              Open My Inventory
+            </Link>
+            <Link to="/" className="chat-tool-btn activity-empty-link">
+              Browse the map
+            </Link>
+          </div>
+          <ul className="activity-empty-tips">
+            <li>Try: “I want a ladder, who is the closest with it?”</li>
+            <li>Offer something from My Inventory so neighbors can request it.</li>
+            <li>When someone requests a loan, Accept it here to move the status forward.</li>
+          </ul>
         </GlassCard>
       ) : (
         <ul className="activity-list">

@@ -1,10 +1,20 @@
 import json
+from datetime import datetime, timezone
 
 from sqlmodel import Session, select
 
 from app.config import AVERY_ID
 from app.dataset import inventory_rows, resident_rows
 from app.models import CatalogItem, Resident, StockRow
+
+# Real-enough city pins so seeded / load-test neighbors stay visible on maps.
+_CHARLOTTE = {"latitude": 35.2271, "longitude": -80.8431, "state": "NC"}
+_CITY_PINS = {
+    "Charlotte": _CHARLOTTE,
+    "Raleigh": {"latitude": 35.7796, "longitude": -78.6382, "state": "NC"},
+    "Durham": {"latitude": 35.9940, "longitude": -78.8986, "state": "NC"},
+    "Atlanta": {"latitude": 33.7490, "longitude": -84.3880, "state": "GA"},
+}
 
 CATALOG = (
     {
@@ -182,7 +192,26 @@ def seed(session: Session) -> None:
         )
     for row in NEIGHBORS:
         if session.get(Resident, row["id"]) is None:
-            session.add(Resident(**row, initials=initials_for(row["name"])))
+            session.add(
+                Resident(
+                    **row,
+                    initials=initials_for(row["name"]),
+                    latitude=_CHARLOTTE["latitude"] + (row["y"] * 0.001),
+                    longitude=_CHARLOTTE["longitude"] + (row["x"] * 0.001),
+                    formatted_address=f"{row['street']}, Charlotte, North Carolina",
+                    state=_CHARLOTTE["state"],
+                    verified_at=datetime.now(timezone.utc),
+                )
+            )
+        else:
+            existing = session.get(Resident, row["id"])
+            if existing and existing.verified_at is None and existing.city == "Charlotte":
+                existing.latitude = _CHARLOTTE["latitude"] + (row["y"] * 0.001)
+                existing.longitude = _CHARLOTTE["longitude"] + (row["x"] * 0.001)
+                existing.formatted_address = f"{existing.street}, Charlotte, North Carolina"
+                existing.state = _CHARLOTTE["state"]
+                existing.verified_at = datetime.now(timezone.utc)
+                session.add(existing)
     for row in CATALOG:
         if session.get(CatalogItem, row["id"]) is None:
             session.add(
@@ -199,24 +228,54 @@ def seed(session: Session) -> None:
     _seed_stock(session)
 
 
+def _verified_fields_for(person: dict) -> dict:
+    city = (person.get("city") or "").strip() or "Charlotte"
+    pin = _CITY_PINS.get(city, _CHARLOTTE)
+    street = f"{person['id']} Willow Court"
+    return {
+        "street": street,
+        "city": city,
+        "latitude": pin["latitude"] + (float(person["y"]) * 0.001),
+        "longitude": pin["longitude"] + (float(person["x"]) * 0.001),
+        "formatted_address": f"{street}, {city}, {pin['state']}",
+        "state": pin["state"],
+        "verified_at": datetime.now(timezone.utc),
+    }
+
+
 def _seed_stock(session: Session) -> None:
     if session.exec(select(StockRow)).first() is not None:
+        # Older DBs may already have block residents without pins — verify them once.
+        for person in resident_rows():
+            existing = session.get(Resident, person["id"])
+            if existing is None or existing.verified_at is not None:
+                continue
+            fields = _verified_fields_for(person)
+            existing.street = fields["street"]
+            existing.city = fields["city"]
+            existing.latitude = fields["latitude"]
+            existing.longitude = fields["longitude"]
+            existing.formatted_address = fields["formatted_address"]
+            existing.state = fields["state"]
+            existing.verified_at = fields["verified_at"]
+            session.add(existing)
+        session.commit()
         return
     rows = inventory_rows()
     known = {row.id for row in session.exec(select(Resident)).all()}
     for person in resident_rows(rows):
         if person["id"] in known:
             continue
+        fields = _verified_fields_for(person)
         session.add(
             Resident(
                 id=person["id"],
                 name=person["name"],
                 short_name=person["name"].split()[0],
-                street=f"{person['id']} Willow Court",
                 initials=initials_for(person["name"]),
                 x=person["x"],
                 y=person["y"],
-                city=person.get("city") or "",
+                **fields,
             )
         )
     session.add_all(

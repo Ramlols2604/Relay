@@ -33,7 +33,7 @@ import {
   type InventoryDraft,
   type InventoryItem,
 } from '../data/bookshelfProject.ts'
-import { demoResident } from '../data/index.ts'
+import { inventoryQuantityDigits, parseInventoryQuantity } from '../data/inventoryQuantity.ts'
 import {
   givenName,
   incomingLoanRequests,
@@ -63,7 +63,8 @@ export function MyStuffPage() {
   const searchId = useId()
   const categoryId = useId()
   const dialogRef = useRef<HTMLDialogElement>(null)
-  const { items, status, message, addItem, updateItem, removeItem, setAvailableToLend } = useInventory()
+  const { items, savingIds, status, message, addItem, updateItem, removeItem, setAvailableToLend } =
+    useInventory()
   const { requests: loans, advanceLoan } = useLoanRequests()
 
   const [query, setQuery] = useState('')
@@ -127,19 +128,14 @@ export function MyStuffPage() {
     setFormNote('')
   }
 
-  async function onSubmit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault()
+  function onSave(next: InventoryDraft) {
     if (!editor) return
-
-    const problem =
-      editor.mode === 'add' ? await addItem(draft) : await updateItem(editor.item.id, draft)
-
-    if (problem) {
-      setFormNote(problem)
-      return
-    }
-
+    setDraft(next)
+    const target = editor
     closeEditor()
+    void (target.mode === 'add' ? addItem(next) : updateItem(target.item.id, next)).then((problem) => {
+      if (problem) setShelfNote(problem)
+    })
   }
 
   const filtersActive = query.trim().length > 0 || category !== 'All'
@@ -161,7 +157,6 @@ export function MyStuffPage() {
               </h1>
             </div>
           </div>
-          <p className="shelf-lead">{demoResident.street}</p>
           <p className="hint">
             {status === 'loading'
               ? 'Loading your shelf from Snowflake…'
@@ -272,6 +267,7 @@ export function MyStuffPage() {
               <li key={item.id}>
                 <InventoryCard
                   item={item}
+                  saving={savingIds.has(item.id)}
                   onLoan={onLoan}
                   pending={pending}
                   onEdit={() => openEdit(item)}
@@ -311,7 +307,7 @@ export function MyStuffPage() {
             note={formNote}
             onDraftChange={setDraft}
             onNoteClear={() => setFormNote('')}
-            onSubmit={onSubmit}
+            onSave={(next) => void onSave(next)}
             onCancel={closeEditor}
           />
         ) : null}
@@ -322,6 +318,7 @@ export function MyStuffPage() {
 
 function InventoryCard({
   item,
+  saving,
   onLoan,
   pending,
   onEdit,
@@ -330,6 +327,7 @@ function InventoryCard({
   onAcceptPending,
 }: {
   item: InventoryItem
+  saving: boolean
   onLoan: LoanRequest | null
   pending: LoanRequest | null
   onEdit: () => void
@@ -345,8 +343,9 @@ function InventoryCard({
 
   return (
     <article
-      className={`shelf-card${lentOut ? ' shelf-card-on-loan' : ''}`}
+      className={`shelf-card${lentOut ? ' shelf-card-on-loan' : ''}${saving ? ' shelf-card-saving' : ''}`}
       aria-labelledby={titleId}
+      aria-busy={saving || undefined}
     >
       <div className="shelf-card-top">
         <span className={`shelf-card-icon shelf-card-icon-${item.category.toLowerCase()}`}>
@@ -357,6 +356,11 @@ function InventoryCard({
           <h2 id={titleId} className="shelf-card-title">
             {item.name}
           </h2>
+          {saving ? (
+            <p className="shelf-card-saving-label" role="status">
+              Saving…
+            </p>
+          ) : null}
         </div>
         <div className="shelf-card-actions">
           <button type="button" className="shelf-icon-button" aria-label={`Edit ${item.name}`} onClick={onEdit}>
@@ -519,7 +523,7 @@ function InventoryEditor({
   note,
   onDraftChange,
   onNoteClear,
-  onSubmit,
+  onSave,
   onCancel,
 }: {
   mode: 'add' | 'edit'
@@ -527,16 +531,19 @@ function InventoryEditor({
   note: string
   onDraftChange: (draft: InventoryDraft) => void
   onNoteClear: () => void
-  onSubmit: (event: FormEvent<HTMLFormElement>) => void
+  onSave: (draft: InventoryDraft) => void
   onCancel: () => void
 }) {
   const nameId = useId()
   const categoryId = useId()
   const quantityId = useId()
+  const quantityErrorId = useId()
   const conditionId = useId()
   const notesId = useId()
   const lendId = useId()
   const noteId = useId()
+  const [quantityText, setQuantityText] = useState(() => String(draft.quantity))
+  const [quantityError, setQuantityError] = useState('')
   const canSave = draft.name.trim().length > 0
 
   function patch(partial: Partial<InventoryDraft>) {
@@ -544,8 +551,30 @@ function InventoryEditor({
     if (note) onNoteClear()
   }
 
+  function commitQuantityText(raw: string) {
+    const parsed = parseInventoryQuantity(raw)
+    if (!parsed.ok) return
+    setQuantityText(String(parsed.value))
+    setQuantityError('')
+    patch({ quantity: parsed.value })
+  }
+
+  function handleSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    const parsed = parseInventoryQuantity(quantityText)
+    if (!parsed.ok) {
+      setQuantityError(parsed.error)
+      return
+    }
+    setQuantityError('')
+    setQuantityText(String(parsed.value))
+    const next = { ...draft, quantity: parsed.value }
+    onDraftChange(next)
+    onSave(next)
+  }
+
   return (
-    <form className="shelf-form" onSubmit={onSubmit}>
+    <form className="shelf-form" onSubmit={handleSubmit}>
       <div className="shelf-form-head">
         <div>
           <p className="eyebrow">{mode === 'add' ? 'New on the shelf' : 'Update item'}</p>
@@ -593,12 +622,24 @@ function InventoryEditor({
           <label htmlFor={quantityId}>Quantity</label>
           <input
             id={quantityId}
-            type="number"
-            min={1}
-            max={99}
-            value={draft.quantity}
-            onChange={(event) => patch({ quantity: Number(event.target.value) })}
+            type="text"
+            inputMode="numeric"
+            autoComplete="off"
+            value={quantityText}
+            aria-invalid={quantityError ? true : undefined}
+            aria-describedby={quantityError ? quantityErrorId : undefined}
+            onChange={(event) => {
+              setQuantityText(inventoryQuantityDigits(event.target.value))
+              if (quantityError) setQuantityError('')
+              if (note) onNoteClear()
+            }}
+            onBlur={() => commitQuantityText(quantityText)}
           />
+          {quantityError ? (
+            <p id={quantityErrorId} className="shelf-field-error" role="alert">
+              {quantityError}
+            </p>
+          ) : null}
         </div>
 
         <div className="shelf-field">

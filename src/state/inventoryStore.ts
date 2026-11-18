@@ -3,6 +3,7 @@ import type { InventoryDraft, InventoryItem } from '../data/bookshelfProject.ts'
 
 export type InventoryStore = {
   items: readonly InventoryItem[]
+  savingIds: ReadonlySet<string>
   status: 'loading' | 'ready' | 'error'
   message: string
   addItem: (draft: InventoryDraft) => Promise<string | null>

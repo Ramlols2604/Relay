@@ -13,18 +13,28 @@ import type {
   ApiInventoryItem,
   ApiLoan,
   ApiProject,
+  ApiProfile,
   ApiResident,
   ApiGroupBuyMember,
+  ApiSampleListing,
   ApiSharedDemand,
 } from './types.ts'
+import { CACHE_KEYS, TTL, get, getActiveUser, invalidate, set, setActiveUser } from './cache.ts'
 
-export const apiBase = (import.meta.env.VITE_API_URL || 'http://127.0.0.1:8000').replace(/\/+$/, '')
+const viteEnv = (import.meta as ImportMeta & { env?: Record<string, string | undefined> }).env
+export const apiBase = (viteEnv?.VITE_API_URL || 'http://127.0.0.1:8000').replace(/\/+$/, '')
 
 let tokenProvider: () => Promise<string | null> = async () => null
 
 /** Clerk session token. The app sets this after sign-in. Do not paste a token by hand. */
 export function setAuthTokenProvider(provider: () => Promise<string | null>) {
   tokenProvider = provider
+}
+
+/** Authorization header for fetches outside `request()` (e.g. /api/geocode). */
+export async function authHeaders(): Promise<Record<string, string>> {
+  const token = await tokenProvider()
+  return token ? { Authorization: `Bearer ${token}` } : {}
 }
 
 export class ApiError extends Error {
@@ -48,6 +58,9 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
       ...init?.headers,
     },
   })
+  if (response.status === 304) {
+    throw new ApiError(304, 'Not modified')
+  }
   const body: unknown = await response.json().catch(() => null)
   if (!response.ok) {
     const detail = body && typeof body === 'object' && 'detail' in body ? body.detail : body
@@ -56,59 +69,209 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return body as T
 }
 
+type EtagResult<T> = {
+  value: T
+  etag?: string
+  notModified: boolean
+}
+
+async function requestWithEtag<T>(path: string, etag?: string): Promise<EtagResult<T>> {
+  const token = await tokenProvider()
+  const response = await fetch(`${apiBase}${path}`, {
+    headers: {
+      'Content-Type': 'application/json',
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      ...(etag ? { 'If-None-Match': etag } : {}),
+    },
+  })
+  const nextEtag = response.headers.get('ETag') ?? etag
+  if (response.status === 304) {
+    return { value: undefined as unknown as T, etag: nextEtag, notModified: true }
+  }
+  const body: unknown = await response.json().catch(() => null)
+  if (!response.ok) {
+    const detail = body && typeof body === 'object' && 'detail' in body ? body.detail : body
+    throw new ApiError(response.status, detail)
+  }
+  return { value: body as T, etag: nextEtag ?? undefined, notModified: false }
+}
+
 function post<T>(path: string, body?: unknown) {
   return request<T>(path, { method: 'POST', body: body === undefined ? undefined : JSON.stringify(body) })
+}
+
+/**
+ * Stale-while-revalidate: return a cached copy immediately (even if expired), refresh in the
+ * background, and fall back to cache when the network fails.
+ */
+async function swrGet<T>(
+  key: string,
+  ttlMs: number,
+  load: (etag?: string) => Promise<EtagResult<T>>,
+): Promise<T> {
+  const hit = get<T>(key)
+  if (hit) {
+    void (async () => {
+      try {
+        const result = await load(hit.etag)
+        if (result.notModified) {
+          set(key, hit.value, ttlMs, hit.etag)
+          return
+        }
+        set(key, result.value, ttlMs, result.etag)
+      } catch {
+        /* keep stale */
+      }
+    })()
+    return hit.value
+  }
+  const result = await load(undefined)
+  if (result.notModified) {
+    throw new ApiError(304, 'Not modified')
+  }
+  set(key, result.value, ttlMs, result.etag)
+  return result.value
 }
 
 type LoanCard = { type: 'loan_status'; record: 'loan' } & ApiLoan
 type HandoffCard = { type: 'loan_status'; record: 'handoff' } & ApiHandoff
 
 export const api = {
-  chat: (residentId: string, message: string) =>
-    post<ApiChatCard>('/api/chat', { resident_id: residentId, message }),
+  chat: (
+    residentId: string,
+    message: string,
+    opts?: { includeDemoListings?: boolean; radiusMiles?: number },
+  ) =>
+    post<ApiChatCard>('/api/chat', {
+      resident_id: residentId,
+      message,
+      ...(opts?.includeDemoListings !== undefined ? { include_demo_listings: opts.includeDemoListings } : {}),
+      ...(opts?.radiusMiles !== undefined ? { radius_miles: opts.radiusMiles } : {}),
+    }),
   confirmRequest: (residentId: string, requestId: string) =>
     post<ApiChatCard>(`/api/requests/${requestId}/confirm`, { resident_id: residentId }),
-  residents: () => request<ApiResident[]>('/api/residents'),
-  saveProfile: (body: {
+  residents: () =>
+    swrGet<ApiResident[]>(CACHE_KEYS.residents, TTL.residents, (etag) =>
+      requestWithEtag<ApiResident[]>('/api/residents', etag),
+    ),
+  saveProfile: async (body: {
     clerk_user_id: string
     name: string
     email: string
     initials: string
     street: string
+    city: string
+    about?: string
+    latitude?: number | null
+    longitude?: number | null
+    formatted_address?: string | null
+    state?: string | null
+  }) => {
+    setActiveUser(body.clerk_user_id)
+    const saved = await post<ApiProfile>('/api/me', body)
+    set(CACHE_KEYS.profile, saved, TTL.profile)
+    invalidate(CACHE_KEYS.residents)
+    return saved
+  },
+  profile: async (clerkUserId: string) => {
+    setActiveUser(clerkUserId)
+    // Always revalidate; callers with a cached copy handle network failure themselves.
+    const saved = await request<ApiProfile>(
+      `/api/me?clerk_user_id=${encodeURIComponent(clerkUserId)}`,
+    )
+    set(CACHE_KEYS.profile, saved, TTL.profile)
+    return saved
+  },
+  updateProfile: async (body: {
+    clerk_user_id: string
+    street?: string
     city?: string
     about?: string
-  }) =>
-    post<{ id: string; name: string; resident_id: string; city: string; about: string; onboarded: boolean }>(
-      '/api/me',
-      body,
-    ),
-  profile: (clerkUserId: string) =>
-    request<{ resident_id: string | null; city: string; about: string; onboarded: boolean }>(
-      `/api/me?clerk_user_id=${encodeURIComponent(clerkUserId)}`,
-    ),
-  inventory: (residentId: string) =>
-    request<ApiInventory>(`/api/inventory?resident_id=${encodeURIComponent(residentId)}`),
-  createInventory: (
+    latitude?: number | null
+    longitude?: number | null
+    formatted_address?: string | null
+    state?: string | null
+  }) => {
+    setActiveUser(body.clerk_user_id)
+    const saved = await request<ApiProfile>('/api/me', {
+      method: 'PATCH',
+      body: JSON.stringify(body),
+    })
+    set(CACHE_KEYS.profile, saved, TTL.profile)
+    invalidate(CACHE_KEYS.residents)
+    return saved
+  },
+  inventory: (residentId: string) => {
+    const self = getActiveUser()
+    if (self && residentId === self) {
+      return swrGet<ApiInventory>(CACHE_KEYS.inventory, TTL.inventory, async () => ({
+        value: await request<ApiInventory>(
+          `/api/inventory?resident_id=${encodeURIComponent(residentId)}`,
+        ),
+        notModified: false,
+      }))
+    }
+    return request<ApiInventory>(`/api/inventory?resident_id=${encodeURIComponent(residentId)}`)
+  },
+  createInventory: async (
     residentId: string,
     body: { name: string; category: string; quantity: number; condition: string; notes: string; available_to_lend: boolean },
-  ) => post<ApiInventoryItem>('/api/inventory', { resident_id: residentId, ...body }),
-  updateInventory: (
+  ) => {
+    const saved = await post<ApiInventoryItem>('/api/inventory', { resident_id: residentId, ...body })
+    invalidate(CACHE_KEYS.inventory)
+    return saved
+  },
+  updateInventory: async (
     residentId: string,
     itemId: string,
     body: { name: string; category: string; quantity: number; condition: string; notes: string; available_to_lend: boolean },
-  ) =>
-    request<ApiInventoryItem>(`/api/inventory/${encodeURIComponent(itemId)}`, {
+  ) => {
+    const saved = await request<ApiInventoryItem>(`/api/inventory/${encodeURIComponent(itemId)}`, {
       method: 'PATCH',
       body: JSON.stringify({ resident_id: residentId, ...body }),
-    }),
-  deleteInventory: (residentId: string, itemId: string) =>
-    request<{ deleted: string }>(
+    })
+    invalidate(CACHE_KEYS.inventory)
+    return saved
+  },
+  deleteInventory: async (residentId: string, itemId: string) => {
+    const saved = await request<{ deleted: string }>(
       `/api/inventory/${encodeURIComponent(itemId)}?resident_id=${encodeURIComponent(residentId)}`,
       { method: 'DELETE' },
-    ),
+    )
+    invalidate(CACHE_KEYS.inventory)
+    return saved
+  },
   neighborhood: (residentId: string) =>
     request<ApiInventory>(`/api/neighborhood?resident_id=${encodeURIComponent(residentId)}`),
-  catalog: () => request<ApiCatalogItem[]>('/api/catalog'),
+  listings: (
+    query:
+      | { bbox: { west: number; south: number; east: number; north: number } }
+      | { radiusMiles: number; latitude: number; longitude: number },
+    limit = 2000,
+  ) => {
+    if ('bbox' in query) {
+      const box = `${query.bbox.west},${query.bbox.south},${query.bbox.east},${query.bbox.north}`
+      return request<{ items: ApiSampleListing[]; count: number; is_sample: true }>(
+        `/api/listings?bbox=${encodeURIComponent(box)}&limit=${limit}`,
+      )
+    }
+    const params = new URLSearchParams({
+      radius_miles: String(query.radiusMiles),
+      lat: String(query.latitude),
+      lng: String(query.longitude),
+      limit: String(limit),
+    })
+    return request<{
+      items: ApiSampleListing[]
+      count: number
+      is_sample: true
+      radius_miles: number
+    }>(`/api/listings?${params.toString()}`)
+  },
+  catalog: () =>
+    swrGet<ApiCatalogItem[]>(CACHE_KEYS.catalog, TTL.catalog, (etag) =>
+      requestWithEtag<ApiCatalogItem[]>('/api/catalog', etag),
+    ),
   activity: () => request<ApiActivity>('/api/activity'),
   sharedDemand: () => request<ApiSharedDemand>('/api/shared-demand'),
   startGroupBuy: (catalogItemId: string, resident?: string) =>
@@ -141,7 +304,7 @@ export const api = {
   removeTool: (projectId: string, toolId: string) =>
     request<ApiProject>(`/api/projects/${projectId}/tools/${toolId}`, { method: 'DELETE' }),
 
-  createLoan: (
+  createLoan: async (
     residentId: string,
     body: {
       lender_id: string
@@ -150,7 +313,11 @@ export const api = {
       window_end: string
       inventory_id?: string
     },
-  ) => post<LoanCard>('/api/loans', { borrower_id: residentId, quantity: 1, ...body }),
+  ) => {
+    const saved = await post<LoanCard>('/api/loans', { borrower_id: residentId, quantity: 1, ...body })
+    invalidate(CACHE_KEYS.inventory)
+    return saved
+  },
   respondLoan: (loanId: string, action: 'accept' | 'decline') =>
     post<LoanCard>(`/api/loans/${loanId}/respond`, { action }),
   pickupLoan: (loanId: string) => post<LoanCard>(`/api/loans/${loanId}/pickup`),
@@ -181,10 +348,14 @@ export const admin = {
   groupBuys: () => request<ApiGroupBuy[]>('/api/admin/group-buys'),
   closeGroupBuy: (itemId: string) => del<{ closed: string }>(`/api/admin/group-buys/${enc(itemId)}`),
   catalog: () => request<AdminCatalogItem[]>('/api/admin/catalog'),
-  updateCatalog: (
+  updateCatalog: async (
     id: string,
     body: Partial<Pick<AdminCatalogItem, 'name' | 'demo_price_cents' | 'default_loan_hours'>>,
-  ) => patch<AdminCatalogItem>(`/api/admin/catalog/${enc(id)}`, body),
+  ) => {
+    const saved = await patch<AdminCatalogItem>(`/api/admin/catalog/${enc(id)}`, body)
+    invalidate(CACHE_KEYS.catalog)
+    return saved
+  },
   audit: (limit = 100) => request<AdminAuditEntry[]>(`/api/admin/audit?limit=${limit}`),
 }
 
@@ -195,3 +366,5 @@ function errorMessage(status: number, detail: unknown) {
   }
   return `The Relay API answered ${status}.`
 }
+
+export { setActiveUser, clearAll as clearApiCache } from './cache.ts'

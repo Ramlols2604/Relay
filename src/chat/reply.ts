@@ -48,6 +48,15 @@ export function replyFromApi(card: ApiChatCard, text: string): ChatMessage {
       return createTextMessage('relay', loanStatusText(card))
     case 'no_match':
       return createTextMessage('relay', card.message)
+    case 'nearby_lenders':
+      return createCardMessage('relay', {
+        type: 'nearby-lenders',
+        item: card.item,
+        radiusMiles: card.radius_miles,
+        includeDemo: card.include_demo,
+        lenders: card.lenders,
+        summary: card.message,
+      })
   }
 }
 

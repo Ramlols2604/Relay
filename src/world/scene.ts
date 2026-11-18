@@ -78,6 +78,8 @@ export class RelayScene {
   private readonly resizeObserver: ResizeObserver
   private readonly disposables: { dispose: () => void }[] = []
   private night = false
+  private gardenCount = -1
+  private parkFlowers: THREE.Group | null = null
   private readonly cleanups: (() => void)[] = []
 
   constructor(host: HTMLElement, callbacks: Callbacks) {
@@ -146,6 +148,8 @@ export class RelayScene {
   setTown(lots: readonly Lot[], viewerId: string, garden: number) {
     this.clearGroup(this.townGroup)
     this.houses.clear()
+    this.parkFlowers = null
+    this.gardenCount = -1
     // Houses may have moved, so beacons and walkers built for the old layout are dropped. The caller re-adds them.
     for (const id of [...this.walkers.keys()]) this.removeWalker(id)
     for (const mesh of this.beacons.values()) this.dynamicGroup.remove(mesh.group)
@@ -283,17 +287,31 @@ export class RelayScene {
       this.disposables.push(crown.geometry)
       this.townGroup.add(crown)
     }
-    // One flower for each exchange finished between neighbors (the garden tally).
+    this.parkFlowers = null
+    this.gardenCount = -1
+    this.setGarden(garden)
+  }
+
+  /** Update park flowers without rebuilding houses — keeps screen positions stable for clicks. */
+  setGarden(garden: number) {
+    const count = Math.min(60, Math.max(0, garden))
+    if (count === this.gardenCount && this.parkFlowers) return
+    if (this.parkFlowers) this.townGroup.remove(this.parkFlowers)
+    const group = new THREE.Group()
+    group.userData.kind = 'park-flowers'
     const flower = new THREE.SphereGeometry(0.28, 8, 6)
     this.disposables.push(flower)
     const colors = [0xff7aa2, 0xffd166, 0xc77dff, 0xff9f1c, 0xf94144]
-    for (let i = 0; i < Math.min(60, Math.max(0, garden)); i++) {
+    for (let i = 0; i < count; i++) {
       const x = parkPoint.x + (hash(`f${i}`) - 0.5) * (SPACING - 4.4)
       const z = parkPoint.z + (hash(`fz${i}`) - 0.5) * (SPACING - 4.4)
       const bloom = new THREE.Mesh(flower, this.mat(colors[i % colors.length]))
       bloom.position.set(x, 0.42, z)
-      this.townGroup.add(bloom)
+      group.add(bloom)
     }
+    this.townGroup.add(group)
+    this.parkFlowers = group
+    this.gardenCount = count
   }
 
   private addLamps(minCol: number, maxCol: number, minRow: number, maxRow: number) {

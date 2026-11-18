@@ -48,12 +48,17 @@ export type ShareLink = {
 /**
  * Map backdrop for the fictional Willow Court residents.
  * Park Slope is a real place. The residents are not.
+ * Real accounts geocode their own street/city instead.
  */
 export const demoMapBackdrop = {
   name: 'Park Slope, Brooklyn',
+  longitude: -73.980476,
+  latitude: 40.667858,
   minZoom: 14,
   maxZoom: 18,
 } as const
+
+export type MapOrigin = { longitude: number; latitude: number }
 
 /** Avery plus the three seeded lenders, placed a few blocks apart. */
 export const sceneResidents: readonly SceneResident[] = [
@@ -63,8 +68,8 @@ export const sceneResidents: readonly SceneResident[] = [
     initials: demoResident.initials,
     street: demoResident.street,
     isYou: true,
-    longitude: -73.980476,
-    latitude: 40.667858,
+    longitude: demoMapBackdrop.longitude,
+    latitude: demoMapBackdrop.latitude,
   },
   {
     id: 'neighbor-priya',
@@ -129,28 +134,29 @@ export function sceneResidentById(id: string) {
   return sceneResidents.find((resident) => resident.id === id)
 }
 
-export function blockPin(x: number, y: number) {
+export function blockPin(x: number, y: number, origin: MapOrigin = demoMapBackdrop) {
   return {
-    longitude: -73.980476 + x * 0.00045,
-    latitude: 40.667858 + y * 0.00035,
+    longitude: origin.longitude + x * 0.00045,
+    latitude: origin.latitude + y * 0.00035,
   }
 }
 
 /** Room for the city-scale block grid, projected onto the same map origin. */
-export function listingMapBounds(): [[number, number], [number, number]] {
-  const westPin = blockPin(-500, 0)
-  const eastPin = blockPin(500, 0)
-  const southPin = blockPin(0, -500)
-  const northPin = blockPin(0, 500)
+export function listingMapBounds(origin: MapOrigin = demoMapBackdrop): [[number, number], [number, number]] {
+  const westPin = blockPin(-40, 0, origin)
+  const eastPin = blockPin(40, 0, origin)
+  const southPin = blockPin(0, -40, origin)
+  const northPin = blockPin(0, 40, origin)
   return [
-    [westPin.longitude - 0.02, southPin.latitude - 0.02],
-    [eastPin.longitude + 0.02, northPin.latitude + 0.02],
+    [westPin.longitude - 0.01, southPin.latitude - 0.01],
+    [eastPin.longitude + 0.01, northPin.latitude + 0.01],
   ]
 }
 
 export function residentsFromListings(
   you: { id: string; name: string; initials: string; street: string },
   items: readonly { resident_id: string; resident_name: string; x?: number; y?: number; catalog_item: string; catalog_name?: string; willing_to_lend?: boolean }[],
+  origin: MapOrigin = demoMapBackdrop,
 ): SceneResident[] {
   const people = new Map<string, SceneResident>()
   people.set(you.id, {
@@ -160,12 +166,12 @@ export function residentsFromListings(
     street: you.street,
     isYou: true,
     offers: [],
-    ...blockPin(0, 0),
+    ...blockPin(0, 0, origin),
   })
   for (const item of items) {
     if (item.willing_to_lend === false) continue
     const name = item.catalog_name || item.catalog_item
-    const pin = blockPin(Number(item.x) || 0, Number(item.y) || 0)
+    const pin = blockPin(Number(item.x) || 0, Number(item.y) || 0, origin)
     const existing = people.get(item.resident_id)
     if (!existing) {
       const words = item.resident_name.split(/\s+/).filter(Boolean)

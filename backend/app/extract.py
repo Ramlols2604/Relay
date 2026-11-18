@@ -15,6 +15,7 @@ from app.config import (
     backboard_model,
     gemini_api_key,
     gemini_model,
+    llm_order,
     ollama_host,
     ollama_model,
 )
@@ -25,13 +26,25 @@ log = logging.getLogger(__name__)
 GEMINI_ATTEMPTS = 2
 EXTRACTION_DEADLINE_SECONDS = 8.0
 _deadline: ContextVar[float | None] = ContextVar("extraction_deadline", default=None)
+# A per-provider override on top of the overall deadline above: lets one slow provider's
+# budget run out without touching the time left for the whole extraction.
+_provider_deadline: ContextVar[float | None] = ContextVar("provider_deadline", default=None)
+
+# Providers extract_message can call, and the share of the time budget the first one in
+# RELAY_LLM_ORDER is allowed to use. Keeping this below 1.0 means a slow provider up front
+# (Gemini, by default) can't eat the whole deadline and starve the providers behind it.
+PROVIDER_NAMES = ("gemini", "ollama", "backboard")
+FIRST_PROVIDER_SHARE = 0.6
+
+# Small in-memory counters, read by GET /api/admin/overview. Reset on process restart.
+_PROVIDER_STATS: dict[str, dict[str, int]] = {name: {"success": 0, "fail": 0} for name in PROVIDER_NAMES}
 
 EXTRACTION_SCHEMA = {
     "type": "object",
     "additionalProperties": False,
     "required": ["intent", "items", "window_start", "window_end", "area"],
     "properties": {
-        "intent": {"type": "string", "enum": ["project", "need", "offer"]},
+        "intent": {"type": "string", "enum": ["project", "need", "offer", "nearby"]},
         "items": {
             "type": "array",
             "items": {
@@ -76,6 +89,75 @@ class Extraction:
     extra_names: list[str] = field(default_factory=list)
 
 
+def provider_stats() -> dict[str, dict[str, int]]:
+    """Success/fail counts per LLM provider since this process started. Read by the admin
+    overview; never persisted, so a restart resets them."""
+    return {name: dict(counts) for name, counts in _PROVIDER_STATS.items()}
+
+
+def _record_outcome(name: str, ok: bool) -> None:
+    _PROVIDER_STATS.setdefault(name, {"success": 0, "fail": 0})
+    _PROVIDER_STATS[name]["success" if ok else "fail"] += 1
+
+
+def _configured(name: str) -> bool:
+    """Whether the provider has the env vars it needs to be asked at all."""
+    if name == "gemini":
+        return bool(gemini_api_key())
+    if name == "ollama":
+        return bool(ollama_host())
+    if name == "backboard":
+        return bool(backboard_api_key())
+    return False
+
+
+def _requested_order() -> list[str]:
+    """RELAY_LLM_ORDER, with unknown provider names dropped (and a warning logged for each)
+    and duplicates removed. Does not filter by whether a provider is configured."""
+    order: list[str] = []
+    for name in llm_order():
+        if name not in PROVIDER_NAMES:
+            log.warning("RELAY_LLM_ORDER names an unknown provider %r; ignoring it", name)
+            continue
+        if name not in order:
+            order.append(name)
+    return order
+
+
+def active_llm_order() -> list[str]:
+    """The provider order extract_message will actually use: RELAY_LLM_ORDER, with unknown
+    and unconfigured providers dropped. Shown on the admin overview."""
+    return [name for name in _requested_order() if _configured(name)]
+
+
+def _provider_time_budgets(total_seconds: float, count: int) -> list[float]:
+    """Split the extraction deadline across `count` providers, in order.
+
+    The first provider may use at most FIRST_PROVIDER_SHARE of the total budget; the rest
+    is split evenly across the providers behind it. This way a slow provider in the first
+    slot (Gemini, by default) is cut off with time still left for the backup providers,
+    instead of eating the whole deadline.
+    """
+    total = max(total_seconds, 0.0)
+    if count <= 0:
+        return []
+    if count == 1:
+        return [total]
+    first = total * FIRST_PROVIDER_SHARE
+    rest_each = (total - first) / (count - 1)
+    return [first] + [rest_each] * (count - 1)
+
+
+def _call_provider(name: str, text: str, catalog: list[CatalogItem], now: datetime) -> Extraction | None:
+    if name == "gemini":
+        return _from_gemini(text, catalog, now)
+    if name == "ollama":
+        return _from_ollama(text, catalog, now)
+    if name == "backboard":
+        return _from_backboard(text, catalog, now)
+    return None
+
+
 def extract_message(
     text: str,
     catalog: list[CatalogItem],
@@ -88,15 +170,23 @@ def extract_message(
         return answer
     token = _deadline.set(monotonic() + deadline_seconds)
     try:
-        local = _from_ollama(text, catalog, moment) if _remaining() > 0 else None
-        if local is not None:
-            return local
-        gemini = _from_gemini(text, catalog, moment) if _remaining() > 0 else None
-        if gemini is not None:
-            return gemini
-        backboard = _from_backboard(text, catalog, moment) if _remaining() > 0 else None
-        if backboard is not None:
-            return backboard
+        order = active_llm_order()
+        budgets = _provider_time_budgets(deadline_seconds, len(order))
+        for name, budget in zip(order, budgets):
+            if _remaining() <= 0:
+                log.warning("extract: stopping before %s, the extraction deadline is exhausted", name)
+                break
+            budget_token = _provider_deadline.set(monotonic() + max(budget, 0.0))
+            try:
+                result = _call_provider(name, text, catalog, moment)
+            finally:
+                _provider_deadline.reset(budget_token)
+            if result is not None:
+                _record_outcome(name, True)
+                log.info("extract: %s answered (budget %.1fs)", name, budget)
+                return result
+            _record_outcome(name, False)
+            log.info("extract: %s gave no answer (budget %.1fs); see warning above for why", name, budget)
         return _fallback(text, catalog, moment)
     finally:
         _deadline.reset(token)
@@ -104,9 +194,11 @@ def extract_message(
 
 def _remaining() -> float:
     deadline = _deadline.get()
-    if deadline is None:
-        return EXTRACTION_DEADLINE_SECONDS
-    return deadline - monotonic()
+    base = EXTRACTION_DEADLINE_SECONDS if deadline is None else deadline - monotonic()
+    provider_deadline = _provider_deadline.get()
+    if provider_deadline is None:
+        return base
+    return min(base, provider_deadline - monotonic())
 
 
 def _yes_no(text: str) -> Extraction | None:
@@ -118,6 +210,11 @@ def _yes_no(text: str) -> Extraction | None:
     return None
 
 
+NEARBY_WORDS = re.compile(
+    r"\bclosest\b|\bnearest\b|\bwho\s+(?:has|is)\b|\bnear\s+me\b",
+)
+
+
 def _fallback(text: str, catalog: list[CatalogItem], now: datetime) -> Extraction:
     window = _window(text, now)
     area = _area(text)
@@ -125,6 +222,8 @@ def _fallback(text: str, catalog: list[CatalogItem], now: datetime) -> Extractio
 
     bookshelf = is_bookshelf(text)
     mentioned = [item.id for item in mentioned_items(text, catalog)]
+    if mentioned and NEARBY_WORDS.search(text.lower()):
+        return Extraction("nearby", mentioned[:1], quantity, window[0], window[1], area)
     if re.search(r"\bi have\b|\bto give\b|\bgive away\b|\boffering\b", text.lower()):
         item_ids = mentioned[:1]
         return Extraction("offer", item_ids, quantity, window[0], window[1], area)
@@ -142,6 +241,8 @@ def _fallback(text: str, catalog: list[CatalogItem], now: datetime) -> Extractio
 
 
 def _prompt(text: str, catalog: list[CatalogItem]) -> str:
+    """Build the LLM prompt from only the user's message and catalog item names. Never add
+    resident fields (email, phone, street, etc.) here: those must never leave this server."""
     names = ", ".join(item.name for item in catalog)
     return (
         "Turn this neighborhood-sharing message into JSON matching this schema exactly. "

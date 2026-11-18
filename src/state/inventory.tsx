@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react'
 import { ApiError, api } from '../api/client.ts'
-import type { ApiInventoryItem } from '../api/types.ts'
+import { CACHE_KEYS, get, getActiveUser, setActiveUser } from '../api/cache.ts'
+import type { ApiInventory, ApiInventoryItem } from '../api/types.ts'
 import {
   normalizeToolName,
   type InventoryDraft,
@@ -8,13 +9,34 @@ import {
 } from '../data/bookshelfProject.ts'
 import { InventoryContext } from './inventoryStore.ts'
 
+function cachedShelf(residentId: string): ApiInventory | null {
+  if (getActiveUser() !== residentId) setActiveUser(residentId)
+  return get<ApiInventory>(CACHE_KEYS.inventory)?.value ?? null
+}
+
 export function InventoryProvider({ residentId, children }: { residentId: string; children: ReactNode }) {
-  const [items, setItems] = useState<InventoryItem[]>([])
-  const [status, setStatus] = useState<'loading' | 'ready' | 'error'>('loading')
-  const [message, setMessage] = useState('')
+  const cached = cachedShelf(residentId)
+  const [items, setItems] = useState<InventoryItem[]>(() => (cached ? cached.items.map(toShelfItem) : []))
+  const [savingIds, setSavingIds] = useState<ReadonlySet<string>>(() => new Set())
+  const [status, setStatus] = useState<'loading' | 'ready' | 'error'>(() => (cached ? 'ready' : 'loading'))
+  const [message, setMessage] = useState(() =>
+    cached && cached.snowflake !== 'ok'
+      ? cached.snowflake_message || 'Showing the shelf saved on this machine.'
+      : '',
+  )
 
   useEffect(() => {
     let cancel = false
+    const prior = cachedShelf(residentId)
+    if (prior) {
+      setItems(prior.items.map(toShelfItem))
+      setStatus('ready')
+      setMessage(
+        prior.snowflake === 'ok' ? '' : prior.snowflake_message || 'Showing the shelf saved on this machine.',
+      )
+    } else {
+      setStatus('loading')
+    }
     api
       .inventory(residentId)
       .then((body) => {
@@ -25,11 +47,21 @@ export function InventoryProvider({ residentId, children }: { residentId: string
           setMessage(body.snowflake === 'ok' ? '' : body.snowflake_message || 'Showing the shelf saved on this machine.')
           return
         }
+        if (prior) {
+          setStatus('ready')
+          setMessage('Offline, showing saved info')
+          return
+        }
         setStatus('error')
         setMessage(body.snowflake_message || 'Snowflake inventory is not available.')
       })
       .catch((error: unknown) => {
         if (cancel) return
+        if (prior) {
+          setStatus('ready')
+          setMessage('Offline, showing saved info')
+          return
+        }
         setItems([])
         setStatus('error')
         setMessage(error instanceof Error ? error.message : 'Could not load inventory.')
@@ -39,48 +71,79 @@ export function InventoryProvider({ residentId, children }: { residentId: string
     }
   }, [residentId])
 
+  const markSaving = useCallback((id: string) => {
+    setSavingIds((current) => new Set(current).add(id))
+  }, [])
+
+  const clearSaving = useCallback((id: string) => {
+    setSavingIds((current) => {
+      const next = new Set(current)
+      next.delete(id)
+      return next
+    })
+  }, [])
+
   const addItem = useCallback(async (draft: InventoryDraft) => {
     const next = sanitizeDraft(draft)
     if (!next) return 'Give this item a name first.'
     if (hasDuplicateName(items, next.name)) return 'That name is already on your shelf.'
+    const tempId = `temp:${crypto.randomUUID()}`
+    const optimistic: InventoryItem = { id: tempId, ...next }
+    setItems((current) => [...current, optimistic])
+    markSaving(tempId)
     try {
       const saved = await api.createInventory(residentId, shelfBody(next))
-      setItems((current) => [...current, toShelfItem(saved)])
+      const confirmed = toShelfItem(saved)
+      setItems((current) => current.map((item) => (item.id === tempId ? confirmed : item)))
       return null
     } catch (caught) {
+      setItems((current) => current.filter((item) => item.id !== tempId))
       return shelfProblem(caught)
+    } finally {
+      clearSaving(tempId)
     }
-  }, [items, residentId])
+  }, [clearSaving, items, markSaving, residentId])
 
   const updateItem = useCallback(async (id: string, draft: InventoryDraft) => {
     const next = sanitizeDraft(draft)
     if (!next) return 'Give this item a name first.'
     if (hasDuplicateName(items, next.name, id)) return 'That name is already on your shelf.'
+    const previous = items.find((item) => item.id === id)
+    if (!previous) return 'That item is no longer on your shelf.'
+    setItems((current) => current.map((item) => (item.id === id ? { ...item, ...next } : item)))
+    markSaving(id)
     try {
       const saved = await api.updateInventory(residentId, id, shelfBody(next))
       setItems((current) => current.map((item) => (item.id === id ? toShelfItem(saved) : item)))
       return null
     } catch (caught) {
+      setItems((current) => current.map((item) => (item.id === id ? previous : item)))
       return shelfProblem(caught)
+    } finally {
+      clearSaving(id)
     }
-  }, [items, residentId])
+  }, [clearSaving, items, markSaving, residentId])
 
   const removeItem = useCallback(async (id: string) => {
     const previous = items
     setItems((current) => current.filter((item) => item.id !== id))
+    markSaving(id)
     try {
       await api.deleteInventory(residentId, id)
       return null
     } catch (caught) {
       setItems(previous)
       return shelfProblem(caught)
+    } finally {
+      clearSaving(id)
     }
-  }, [items, residentId])
+  }, [clearSaving, items, markSaving, residentId])
 
   const setAvailableToLend = useCallback(async (id: string, available: boolean) => {
     const current = items.find((item) => item.id === id)
     if (!current) return 'That item is no longer on your shelf.'
     setItems((rows) => rows.map((item) => (item.id === id ? { ...item, availableToLend: available } : item)))
+    markSaving(id)
     try {
       const saved = await api.updateInventory(residentId, id, shelfBody({ ...current, availableToLend: available }))
       setItems((rows) => rows.map((item) => (item.id === id ? toShelfItem(saved) : item)))
@@ -88,12 +151,14 @@ export function InventoryProvider({ residentId, children }: { residentId: string
     } catch (caught) {
       setItems((rows) => rows.map((item) => (item.id === id ? current : item)))
       return shelfProblem(caught)
+    } finally {
+      clearSaving(id)
     }
-  }, [items, residentId])
+  }, [clearSaving, items, markSaving, residentId])
 
   const value = useMemo(
-    () => ({ items, status, message, addItem, updateItem, removeItem, setAvailableToLend }),
-    [items, status, message, addItem, updateItem, removeItem, setAvailableToLend],
+    () => ({ items, savingIds, status, message, addItem, updateItem, removeItem, setAvailableToLend }),
+    [items, savingIds, status, message, addItem, updateItem, removeItem, setAvailableToLend],
   )
 
   return <InventoryContext.Provider value={value}>{children}</InventoryContext.Provider>

@@ -7,3 +7,12 @@ export const demoResident = {
 }
 
 export const demoCommunityLabel = 'Willow Court · fictional demo community'
+
+/**
+ * Top-bar place line. Signed-in accounts get "street · city" (or just city if street is
+ * missing). Demo / unsigned browsing always gets the Willow Court demo label.
+ */
+export function placeLabel(street: string, city: string, signedIn: boolean): string {
+  if (!signedIn) return demoCommunityLabel
+  return [street.trim(), city.trim()].filter(Boolean).join(' · ')
+}

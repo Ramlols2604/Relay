@@ -31,9 +31,22 @@ export function centsFromInput(value: string): number | null {
 
 export type IntegrationRow = { name: string; state: 'ok' | 'missing' | 'error'; note: string }
 
+/** "3 ok, 1 failed" from an { success, fail } counter, or '' when there is nothing to show yet. */
+function statsNote(stats: { success: number; fail: number } | undefined): string {
+  if (!stats || stats.success + stats.fail === 0) return ''
+  return ` ${stats.success} ok, ${stats.fail} failed.`
+}
+
+/** "gemini → ollama → backboard", or a note that nothing is configured. */
+export function llmOrderSummary(order: string[]): string {
+  return order.length > 0 ? order.join(' \u2192 ') : 'No extraction provider is configured; using the built-in parser only.'
+}
+
 /** One row per outside service, so a person can see at a glance what is real and what is missing. */
 export function integrationRows(integrations: AdminOverview['integrations']): IntegrationRow[] {
   const snowflake = integrations.snowflake.snowflake
+  const stats = integrations.llm_provider_stats ?? {}
+  const order = integrations.llm_order ?? []
   return [
     {
       name: 'Snowflake',
@@ -49,18 +62,22 @@ export function integrationRows(integrations: AdminOverview['integrations']): In
       name: 'Ollama (local model)',
       state: integrations.ollama.configured ? 'ok' : 'missing',
       note: integrations.ollama.configured
-        ? `Chat tries ${integrations.ollama.model ?? 'the model'} first.`
+        ? `Tried ${order.includes('ollama') ? `#${order.indexOf('ollama') + 1} in the extraction order` : 'in extraction'} (${integrations.ollama.model ?? 'the model'}).${statsNote(stats.ollama)}`
         : 'OLLAMA_HOST is not set.',
     },
     {
       name: 'Gemini',
       state: integrations.gemini ? 'ok' : 'missing',
-      note: integrations.gemini ? 'Used when no local model answers.' : 'No key.',
+      note: integrations.gemini
+        ? `Tried ${order.includes('gemini') ? `#${order.indexOf('gemini') + 1} in the extraction order` : 'in extraction'}.${statsNote(stats.gemini)}`
+        : 'No key.',
     },
     {
       name: 'Backboard',
       state: integrations.backboard ? 'ok' : 'missing',
-      note: integrations.backboard ? 'Configured.' : 'No key.',
+      note: integrations.backboard
+        ? `Tried ${order.includes('backboard') ? `#${order.indexOf('backboard') + 1} in the extraction order` : 'in extraction'}.${statsNote(stats.backboard)}`
+        : 'No key.',
     },
     {
       name: 'Clerk sign-in',
@@ -74,6 +91,13 @@ export function integrationRows(integrations: AdminOverview['integrations']): In
         integrations.admins_configured > 0
           ? `${integrations.admins_configured} admin${integrations.admins_configured === 1 ? '' : 's'} allowed.`
           : 'RELAY_ADMIN_USER_IDS is empty.',
+    },
+    {
+      name: 'Mapbox geocode',
+      state: integrations.mapbox ? 'ok' : 'missing',
+      note: integrations.mapbox
+        ? 'Shared /api/geocode cache is live.'
+        : 'MAPBOX_ACCESS_TOKEN is not set on the API.',
     },
   ]
 }

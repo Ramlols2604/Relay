@@ -68,6 +68,20 @@ test('other cities are left out, and a missing viewer or empty data does not cra
   assert.equal(boundsOf([]).minX, -SPACING)
 })
 
+test('city matching ignores case and spaces', () => {
+  const mixed = [
+    person('avery', 0, 0, { city: 'Charlotte' }),
+    person('jordan', 2, 1, { city: 'charlotte ' }),
+    person('sam', 3, 3, { city: 'Char Lotte' }),
+    person('far', 1, 1, { city: 'Raleigh' }),
+  ]
+  const lots = layoutLots(mixed, 'avery')
+  assert.deepEqual(
+    lots.map((lot) => lot.id).sort(),
+    ['avery', 'jordan', 'sam'],
+  )
+})
+
 test('zones come from street names, biggest first', () => {
   assert.equal(streetName('16 Willow Court'), 'Willow Court')
   assert.equal(streetName('9B Far Road'), 'Far Road')

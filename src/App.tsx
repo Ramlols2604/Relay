@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState, type CSSProperties, type ReactNode } from 'react'
 import { Show, useAuth, UserButton } from '@clerk/react-router'
-import { setAuthTokenProvider } from './api/client.ts'
+import { setAuthTokenProvider, setActiveUser } from './api/client.ts'
 import { GlassCard } from './components/GlassCard.tsx'
 
 export default function App({ children }: { children: ReactNode }) {
@@ -37,8 +37,13 @@ const homes = [
 ]
 
 function ClerkSession() {
-  const { getToken, isSignedIn } = useAuth()
+  const { getToken, isSignedIn, userId } = useAuth()
   setAuthTokenProvider(() => (isSignedIn ? getToken() : Promise.resolve(null)))
+  if (!isSignedIn) {
+    setActiveUser(null)
+  } else if (userId) {
+    setActiveUser(userId)
+  }
   return null
 }
 

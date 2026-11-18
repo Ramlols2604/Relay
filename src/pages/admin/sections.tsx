@@ -1,7 +1,7 @@
 import { useCallback, useDeferredValue, useState, type ReactNode } from 'react'
 import { admin } from '../../api/client.ts'
 import type { AdminCatalogItem, AdminResident, ApiGroupBuy, ApiLoan, ApiRequest } from '../../api/types.ts'
-import { auditSummary, centsFromInput, dollars, integrationRows } from '../../data/admin.ts'
+import { auditSummary, centsFromInput, dollars, integrationRows, llmOrderSummary } from '../../data/admin.ts'
 import { useLoad, useReload, useRunner } from './hooks.ts'
 
 function Status({ loading, error, children }: { loading: boolean; error: string | null; children: ReactNode }) {
@@ -50,6 +50,7 @@ export function OverviewSection() {
               .join(' · ') || 'No loans yet'}
           </p>
           <h3 className="admin-h3">Connected services</h3>
+          <p className="hint">Extraction order: {llmOrderSummary(data.integrations.llm_order)}</p>
           <ul className="admin-list">
             {integrationRows(data.integrations).map((row) => (
               <li key={row.name} className="admin-row">

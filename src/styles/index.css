@@ -293,8 +293,11 @@
   }
 
   .sidebar-demo-label,
+  .sidebar-place-label,
   .mobile-demo-label,
-  .chat-demo-label {
+  .mobile-place-label,
+  .chat-demo-label,
+  .hood-place-label {
     margin: 0;
     color: var(--relay-color-ink-soft);
     font-size: 0.72rem;
@@ -303,13 +306,26 @@
     line-height: 1.3;
   }
 
-  .sidebar-demo-label {
+  .sidebar-demo-label,
+  .sidebar-place-label {
     margin-top: -0.45rem;
     padding: 0 0.35rem;
   }
 
-  .mobile-demo-label {
+  .mobile-demo-label,
+  .mobile-place-label {
     margin-top: 0.55rem;
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .sidebar-place-label {
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .shell-aero-surface {
@@ -460,6 +476,19 @@
     padding: 0.8rem 0.9rem;
   }
 
+  /* Map landing: keep the Relay header compact so it does not crowd Map / 3D controls. */
+  .app-shell-map .mobile-chrome {
+    padding: 0.55rem 0.75rem;
+  }
+
+  .app-shell-map .mobile-place-label {
+    display: none;
+  }
+
+  .app-shell-map .app-main {
+    gap: 0.45rem;
+  }
+
   .mobile-bar {
     display: flex;
     align-items: center;
@@ -474,14 +503,47 @@
     bottom: max(0.75rem, env(safe-area-inset-bottom));
     left: 0.75rem;
     display: flex;
-    flex-wrap: wrap;
+    flex-wrap: nowrap;
     justify-content: center;
-    gap: 0.35rem;
+    align-items: stretch;
+    gap: 0;
     border-radius: var(--relay-radius-xl);
-    padding: 0.45rem;
+    padding: 0.4rem;
+    touch-action: manipulation;
+    user-select: none;
+    overflow: hidden;
+  }
+
+  /* Must beat `.shell-aero-surface > :not(.shell-aero) { position: relative }` or the
+     indicator becomes a flex item and leaves a blank slot in the dock. */
+  .mobile-dock > .mobile-dock-indicator {
+    position: absolute;
+    z-index: 0;
+    top: 0.4rem;
+    left: 0;
+    height: calc(100% - 0.8rem);
+    border-radius: var(--relay-radius-pill);
+    background:
+      linear-gradient(180deg, color-mix(in srgb, white 36%, transparent), transparent 60%),
+      color-mix(in srgb, var(--relay-color-leaf-500) 88%, white);
+    box-shadow:
+      inset 0 1px 0 color-mix(in srgb, white 65%, transparent),
+      0 6px 14px color-mix(in srgb, var(--relay-color-leaf-700) 18%, transparent);
+    transition:
+      transform 280ms cubic-bezier(0.32, 0.72, 0, 1),
+      width 280ms cubic-bezier(0.32, 0.72, 0, 1),
+      opacity 160ms ease;
+    will-change: transform, width;
+    pointer-events: none;
+  }
+
+  .mobile-dock > .mobile-dock-indicator.mobile-dock-indicator-dragging {
+    transition: none;
   }
 
   .mobile-dock .nav-pill {
+    position: relative;
+    z-index: 1;
     flex: 1 1 0;
     flex-direction: row;
     justify-content: center;
@@ -489,7 +551,36 @@
     max-width: none;
     min-width: 0;
     min-height: 2.85rem;
-    padding: 0.35rem 0.25rem;
+    padding: 0.35rem 0.2rem;
+    background: transparent !important;
+    background-image: none !important;
+    box-shadow: none !important;
+    border-color: transparent !important;
+    color: var(--relay-color-ink-soft);
+    transition: color 200ms ease, transform 160ms ease;
+  }
+
+  .mobile-dock .nav-pill-active {
+    color: var(--relay-color-ink);
+  }
+
+  .mobile-dock .nav-pill:hover:not(.nav-pill-active) {
+    background: transparent !important;
+    color: var(--relay-color-ink);
+  }
+
+  .mobile-dock .nav-pill-icon {
+    width: 2rem;
+    height: 2rem;
+    /* Keep sphere colors — do not bleach the active icon white. */
+    transition: transform 200ms ease, box-shadow 200ms ease;
+  }
+
+  .mobile-dock .nav-pill-active .nav-pill-icon {
+    transform: scale(1.06);
+    box-shadow:
+      inset 0 1px 0 color-mix(in srgb, white 48%, transparent),
+      0 4px 10px color-mix(in srgb, var(--sphere-deep) 35%, transparent);
   }
 
   .side-nav {
@@ -774,6 +865,61 @@
     );
   }
 
+  .offline-cache-notice {
+    margin: 0.5rem 1rem 0;
+    text-align: center;
+  }
+
+  .address-verify-banner {
+    margin: 0.65rem 1rem 0;
+    padding: 0.55rem 0.85rem;
+    border-radius: 0.75rem;
+    background: #fff4e5;
+    color: #7a4a12;
+    text-align: center;
+  }
+
+  .chat-map-preview {
+    margin: 0 0 0.75rem;
+  }
+
+  .chat-map-preview-bg {
+    fill: #eef6f2;
+  }
+
+  .chat-map-preview-ring {
+    fill: none;
+    stroke: #c5ddd2;
+    stroke-width: 1;
+  }
+
+  .chat-map-preview-you {
+    fill: #147a4c;
+    stroke: #fff;
+    stroke-width: 2;
+  }
+
+  .chat-map-preview-lender {
+    fill: #1a6b8a;
+    stroke: #fff;
+    stroke-width: 1.5;
+  }
+
+  .chat-map-preview-number {
+    fill: #fff;
+    font: 800 9px/1 "Nunito", system-ui, sans-serif;
+    pointer-events: none;
+  }
+
+  .chat-map-preview-scale {
+    stroke: #617b88;
+    fill: #617b88;
+  }
+
+  .chat-map-preview-scale-label {
+    font: 700 10px/1 "Nunito", system-ui, sans-serif;
+  }
+
   .hint {
     color: var(--relay-color-ink-soft);
     font-size: 0.84rem;
@@ -843,19 +989,22 @@
     color: var(--relay-color-sky-700);
   }
 
-  .app-shell:has(.chat-page) {
+  .app-shell:has(.chat-page),
+  .app-shell:has(.hood-page) {
     height: 100svh;
     overflow: hidden;
   }
 
-  .app-shell:has(.chat-page) .app-frame {
+  .app-shell:has(.chat-page) .app-frame,
+  .app-shell:has(.hood-page) .app-frame {
     height: 100%;
     min-height: 0;
     align-items: stretch;
     grid-template-rows: minmax(0, 1fr);
   }
 
-  .app-shell:has(.chat-page) .app-main {
+  .app-shell:has(.chat-page) .app-main,
+  .app-shell:has(.hood-page) .app-main {
     display: flex;
     flex-direction: column;
     gap: 0.7rem;
@@ -863,12 +1012,17 @@
     min-height: 0;
   }
 
-  .app-shell:has(.chat-page) .page-canvas {
+  .app-shell:has(.chat-page) .page-canvas,
+  .app-shell:has(.hood-page) .page-canvas {
     display: flex;
     flex: 1 1 auto;
     flex-direction: column;
     min-height: 0;
     overflow: hidden;
+  }
+
+  .page-canvas > * {
+    view-transition-name: none;
   }
 
   .chat-page {
@@ -931,7 +1085,8 @@
     overflow-x: hidden;
     overflow-y: auto;
     overscroll-behavior: contain;
-    padding: 1.2rem 1.05rem 1rem;
+    padding: 1.2rem 1.05rem 1.4rem;
+    scroll-padding-bottom: 1.5rem;
     scrollbar-width: thin;
   }
 
@@ -943,6 +1098,65 @@
   .chat-welcome {
     display: grid;
     gap: 0.85rem;
+  }
+
+  .chat-welcome-top {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 0.75rem;
+  }
+
+  .chat-toolbar {
+    display: inline-flex;
+    flex-wrap: wrap;
+    gap: 0.4rem;
+  }
+
+  .chat-tool-btn,
+  .chat-edit-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    border: 1px solid color-mix(in srgb, var(--relay-color-sky-500) 28%, white);
+    border-radius: var(--relay-radius-pill);
+    background: color-mix(in srgb, white 88%, var(--relay-color-sky-100));
+    padding: 0.4rem 0.7rem;
+    color: var(--relay-color-ink);
+    font: inherit;
+    font-size: 0.78rem;
+    font-weight: 800;
+    cursor: pointer;
+  }
+
+  .chat-tool-btn:disabled {
+    opacity: 0.45;
+    cursor: default;
+  }
+
+  .chat-bubble-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.5rem;
+  }
+
+  .chat-edit-btn {
+    padding: 0.2rem 0.55rem;
+    font-size: 0.72rem;
+  }
+
+  .chat-editing-banner {
+    margin: 0;
+    border: 1px solid color-mix(in srgb, var(--relay-color-leaf-500) 35%, white);
+    border-radius: var(--relay-radius-pill);
+    background: color-mix(in srgb, var(--relay-color-mint-300) 45%, white);
+    padding: 0.55rem 0.85rem;
+    color: var(--relay-color-leaf-700);
+    font-size: 0.88rem;
+    font-weight: 800;
+    line-height: 1.35;
   }
 
   .chat-hero-badge {
@@ -1070,13 +1284,15 @@
     display: flex;
     align-items: flex-end;
     gap: 0.55rem;
+    box-sizing: border-box;
     width: fit-content;
-    max-width: min(100%, 34rem);
+    max-width: 100%;
   }
 
   .chat-row-user {
     flex-direction: row-reverse;
     margin-left: auto;
+    max-width: min(100%, 34rem);
   }
 
   .chat-row-card {
@@ -1124,6 +1340,7 @@
 
   .chat-bubble {
     min-width: 0;
+    max-width: 100%;
     padding: 0.65rem 0.9rem 0.75rem;
   }
 
@@ -1576,9 +1793,12 @@
 
   .chat-composer {
     position: relative;
-    z-index: 1;
+    z-index: 3;
+    flex-shrink: 0;
     border-top: 1px solid color-mix(in srgb, var(--relay-color-sky-500) 18%, white);
-    background: color-mix(in srgb, var(--relay-color-white) 48%, transparent);
+    background: color-mix(in srgb, var(--relay-color-white) 82%, var(--relay-color-aqua-300));
+    -webkit-backdrop-filter: blur(14px) saturate(1.2);
+    backdrop-filter: blur(14px) saturate(1.2);
     padding: 0.55rem 0.9rem 0.75rem;
   }
 
@@ -1605,9 +1825,9 @@
     position: relative;
     z-index: 2;
     flex: 0 0 auto;
-    width: 7.75rem;
-    height: 7.75rem;
-    margin: 0 0 -0.45rem;
+    width: 5.75rem;
+    height: 5.75rem;
+    margin: 0 0 -0.2rem;
     padding: 0.28rem;
     border-radius: var(--relay-radius-pill);
     background:
@@ -1766,7 +1986,12 @@
   @media (max-width: 959px) {
     .chat-log {
       gap: 0.65rem;
-      padding: 0.65rem 0.75rem 0.2rem;
+      padding: 0.65rem 0.75rem 1rem;
+    }
+
+    .relay-cat {
+      width: 4.75rem;
+      height: 4.75rem;
     }
 
     .chat-log-empty {
@@ -2561,6 +2786,13 @@
     display: grid;
     gap: 1rem;
     width: min(100%, 72rem);
+    padding-bottom: 0.5rem;
+  }
+
+  .shelf-page::after {
+    content: '';
+    display: block;
+    height: 0.25rem;
   }
 
   .shelf-hero {
@@ -2604,13 +2836,23 @@
 
   .shelf-toolbar {
     display: grid;
-    gap: 0.85rem;
+    gap: 0.75rem;
+    grid-template-columns: minmax(0, 1fr);
+    align-items: end;
+  }
+
+  @media (min-width: 36rem) {
+    .shelf-toolbar {
+      grid-template-columns: minmax(0, 1fr) minmax(10rem, 13rem);
+      gap: 0.85rem;
+    }
   }
 
   .shelf-search {
     position: relative;
     display: flex;
     align-items: center;
+    min-width: 0;
   }
 
   .shelf-search-icon {
@@ -2784,6 +3026,17 @@
     font-weight: 800;
     letter-spacing: -0.02em;
     line-height: 1.2;
+  }
+
+  .shelf-card-saving-label {
+    margin: 0.2rem 0 0;
+    font-size: 0.78rem;
+    font-weight: 600;
+    color: var(--relay-color-ink-soft);
+  }
+
+  .shelf-card-saving {
+    opacity: 0.92;
   }
 
   .shelf-card-actions {
@@ -3184,6 +3437,13 @@
     text-transform: uppercase;
   }
 
+  .shelf-field-error {
+    margin: 0;
+    color: #9b2c1f;
+    font-size: 0.8rem;
+    font-weight: 700;
+  }
+
   .shelf-form textarea {
     border-radius: var(--relay-radius-lg);
     resize: vertical;
@@ -3217,10 +3477,6 @@
       align-items: end;
     }
 
-    .shelf-grid {
-      grid-template-columns: repeat(2, minmax(0, 1fr));
-    }
-
     .shelf-form-grid {
       grid-template-columns: 1fr 1fr;
     }
@@ -3230,7 +3486,15 @@
     }
   }
 
-  @media (min-width: 1024px) {
+  /* Keep inventory cards single-column until there is real room — cramped dual
+     columns on tablet-width viewports looked unfinished. */
+  @media (min-width: 720px) {
+    .shelf-grid {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+  }
+
+  @media (min-width: 1100px) {
     .shelf-grid {
       grid-template-columns: repeat(3, minmax(0, 1fr));
     }
@@ -3527,9 +3791,145 @@
   /* Neighborhood */
 
   .hood-page {
-    display: grid;
-    gap: 1rem;
+    position: relative;
+    display: flex;
+    flex: 1 1 auto;
+    flex-direction: column;
+    gap: 0;
     width: min(100%, 68rem);
+    min-height: 0;
+    height: 100%;
+  }
+
+  .hood-map-stage {
+    position: relative;
+    flex: 1 1 auto;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .hood-layout-map-first {
+    flex: 1 1 auto;
+    min-height: 0;
+    height: 100%;
+    grid-template-rows: minmax(0, 1fr);
+  }
+
+  .hood-layout-map-first .hood-map-column {
+    min-height: 0;
+    height: 100%;
+  }
+
+  .hood-layout-map-first .hood-map,
+  .hood-layout-map-first .hood-fallback {
+    height: 100%;
+    min-height: 18rem;
+  }
+
+  .hood-view-switch-floating {
+    position: absolute;
+    z-index: 4;
+    top: 0.55rem;
+    left: 0.55rem;
+    display: inline-flex;
+    gap: 0.25rem;
+    padding: 0.2rem;
+    border-radius: var(--relay-radius-pill);
+    background: color-mix(in srgb, white 92%, var(--relay-color-sky-100));
+    box-shadow: 0 8px 20px color-mix(in srgb, var(--relay-color-sky-700) 16%, transparent);
+  }
+
+  .hood-panel-desktop-idle {
+    display: none;
+  }
+
+  @media (min-width: 52rem) {
+    .hood-panel-desktop-idle {
+      display: block;
+    }
+  }
+
+  .hood-map-token-warning-floating {
+    position: absolute;
+    z-index: 4;
+    top: 3.4rem;
+    left: 0.75rem;
+    right: 0.75rem;
+    max-width: 28rem;
+  }
+
+  .hood-sheet {
+    position: relative;
+    z-index: 5;
+    display: grid;
+    gap: 0.65rem;
+    margin-top: -1.1rem;
+    border-radius: 1.25rem 1.25rem 0.9rem 0.9rem;
+    padding: 0.35rem 0.85rem 0.9rem;
+    box-shadow:
+      0 -10px 28px color-mix(in srgb, var(--relay-color-sky-700) 14%, transparent),
+      inset 0 1px 0 color-mix(in srgb, white 80%, transparent);
+    transition: padding 220ms ease;
+  }
+
+  .hood-sheet-expanded {
+    padding-bottom: 1.1rem;
+  }
+
+  .hood-sheet-handle {
+    display: grid;
+    gap: 0.55rem;
+    cursor: grab;
+    touch-action: none;
+    padding-top: 0.15rem;
+  }
+
+  .hood-sheet-handle:active {
+    cursor: grabbing;
+  }
+
+  .hood-sheet-grip {
+    justify-self: center;
+    width: 2.6rem;
+    height: 0.28rem;
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--relay-color-ink) 18%, white);
+  }
+
+  .hood-sheet-summary {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.7rem;
+  }
+
+  .hood-sheet-icon {
+    flex: 0 0 auto;
+  }
+
+  .hood-sheet-copy {
+    display: grid;
+    gap: 0.15rem;
+    min-width: 0;
+  }
+
+  .hood-title-compact {
+    font-size: 1.25rem;
+  }
+
+  .hood-sheet-body {
+    display: grid;
+    gap: 0.75rem;
+    max-height: min(46svh, 24rem);
+    overflow: auto;
+    padding-bottom: 0.25rem;
+  }
+
+  .hood-share-note-inline {
+    margin: 0;
+    padding: 0;
+    background: transparent;
+    box-shadow: none;
   }
 
   .hood-hero {
@@ -3569,7 +3969,8 @@
     line-height: 1.45;
   }
 
-  .hood-demo-label {
+  .hood-demo-label,
+  .hood-place-label {
     width: fit-content;
     border: 1px solid color-mix(in srgb, var(--relay-color-sky-500) 35%, white);
     border-radius: var(--relay-radius-pill);
@@ -3579,6 +3980,25 @@
     font-size: 0.78rem;
     font-weight: 800;
     box-shadow: inset 0 1px 0 color-mix(in srgb, var(--relay-color-white) 85%, transparent);
+  }
+
+  .hood-listings-note {
+    margin: 0;
+    color: var(--relay-color-ink-soft);
+    font-size: 0.9rem;
+    font-weight: 650;
+  }
+
+  .hood-map-token-warning,
+  .hood-map-backdrop-note {
+    margin: 0.5rem 0 0;
+    padding: 0.55rem 0.75rem;
+    border-radius: 0.7rem;
+    background: color-mix(in srgb, #fff3cd 80%, white);
+    color: #6b4e00;
+    font-size: 0.85rem;
+    font-weight: 700;
+    line-height: 1.4;
   }
 
   .hood-stage {
@@ -3684,6 +4104,33 @@
     box-shadow:
       inset 0 1px 0 color-mix(in srgb, var(--relay-color-white) 75%, transparent),
       0 10px 24px color-mix(in srgb, var(--relay-color-sky-700) 12%, transparent);
+  }
+
+  .hood-layout-map-first .hood-map,
+  .hood-layout-map-first .hood-fallback {
+    border-radius: 1rem;
+    height: 100%;
+    min-height: 0;
+  }
+
+  @media (min-width: 960px) {
+    .hood-sheet-body {
+      max-height: none;
+    }
+
+    .hood-sheet-body[hidden] {
+      display: grid !important;
+    }
+
+    .hood-page {
+      width: min(100%, 72rem);
+      gap: 0.75rem;
+    }
+
+    .hood-sheet {
+      margin-top: 0;
+      border-radius: var(--relay-radius-xl);
+    }
   }
 
   .hood-map-canvas,
@@ -4120,6 +4567,108 @@
     background: var(--relay-color-turquoise-500);
   }
 
+  .hood-radius {
+    display: grid;
+    gap: 0.35rem;
+    margin: 0.35rem 0 0.75rem;
+    max-width: 22rem;
+  }
+
+  .hood-radius-label {
+    font: 800 0.9rem/1.2 "Nunito", system-ui, sans-serif;
+    color: #16324f;
+  }
+
+  .hood-radius input[type='range'] {
+    width: 100%;
+    accent-color: #147a4c;
+  }
+
+  .hood-radius-ticks {
+    display: flex;
+    justify-content: space-between;
+    font: 700 0.7rem/1 "Nunito", system-ui, sans-serif;
+    color: var(--relay-color-ink-soft);
+  }
+
+  .hood-widen {
+    margin: 0 0 0.75rem;
+    padding: 0.55rem 0.75rem;
+    border-radius: 0.75rem;
+    background: #eef6f2;
+    color: #16324f;
+    font: 700 0.88rem/1.4 "Nunito", system-ui, sans-serif;
+  }
+
+  .hood-widen-button {
+    border: 0;
+    background: transparent;
+    color: #147a4c;
+    font: inherit;
+    font-weight: 800;
+    text-decoration: underline;
+    cursor: pointer;
+    padding: 0;
+  }
+
+  .hood-sample-toggle {
+    display: inline-flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.45rem;
+    margin: 0.35rem 0 0.15rem;
+    font-size: 0.88rem;
+    font-weight: 700;
+    color: var(--relay-color-ink-soft);
+  }
+
+  .hood-sample-auto-hint {
+    font-size: 0.78rem;
+    font-weight: 650;
+    color: var(--relay-color-ink-soft);
+  }
+
+  .hood-sample-count {
+    font-size: 0.78rem;
+    font-weight: 700;
+    color: var(--relay-color-ink-soft);
+  }
+
+  .hood-sample-popup {
+    display: grid;
+    gap: 0.25rem;
+    font-family: inherit;
+  }
+
+  .hood-sample-badge {
+    display: inline-block;
+    width: fit-content;
+    padding: 0.12rem 0.4rem;
+    border-radius: 0.35rem;
+    background: #0c749f;
+    color: #fff;
+    font-size: 0.68rem;
+    font-weight: 800;
+    letter-spacing: 0.02em;
+    text-transform: uppercase;
+  }
+
+  .hood-sample-item {
+    margin: 0;
+    font-size: 0.95rem;
+    font-weight: 800;
+  }
+
+  .hood-sample-meta {
+    margin: 0;
+    font-size: 0.78rem;
+    color: #4a5d6a;
+  }
+
+  .hood-legend-sample {
+    background: #14b8a6;
+  }
+
   .hood-legend-pending {
     background: repeating-linear-gradient(
       90deg,
@@ -4163,6 +4712,11 @@
       height: min(68svh, 36rem);
       min-height: 22rem;
     }
+
+    .hood-layout-map-first .hood-map {
+      height: 100%;
+      min-height: 22rem;
+    }
   }
 
   @media (min-width: 52rem) {
@@ -4171,11 +4725,21 @@
       align-items: start;
     }
 
+    .hood-layout-map-first {
+      align-items: stretch;
+      height: 100%;
+    }
+
     .hood-panel {
       position: sticky;
       top: 0.35rem;
       max-height: min(68svh, 36rem);
       overflow: auto;
+    }
+
+    .hood-layout-map-first .hood-panel {
+      max-height: none;
+      height: 100%;
     }
   }
 }
@@ -4429,9 +4993,11 @@
 .login-card h1:focus { outline: none; }
 .login-description { margin-top: 0.8rem; color: var(--relay-color-ink-soft); }
 .login-form { display: grid; gap: 1.15rem; margin-top: 1.65rem; }
-.login-field { display: grid; gap: 0.4rem; }
+.login-field { display: grid; gap: 0.4rem; font-size: 0.85rem; font-weight: 800; }
 .login-field label { font-size: 0.85rem; font-weight: 800; }
-.login-field input { width: 100%; min-height: 3rem; padding: 0.75rem 0.9rem; border: 1px solid var(--relay-border-soft); border-radius: 0.85rem; background: #ffffffcf; font-size: 1rem; }
+.login-field input { box-sizing: border-box; width: 100%; min-height: 3rem; padding: 0.75rem 0.9rem; border: 1px solid var(--relay-border-soft); border-radius: 0.85rem; background: #ffffffcf; font: inherit; font-size: 1rem; font-weight: 600; }
+.welcome-form { width: min(100%, 28rem); }
+.welcome-form .login-submit { width: 100%; border: 0; }
 .login-field input::placeholder { color: #617b88; }
 .login-password { position: relative; }
 .login-password input { padding-right: 3rem; }
@@ -4612,6 +5178,42 @@
 .world-kpi-alert { background: rgba(253, 232, 230, 0.92) !important; }
 .world-kpi-alert .world-kpi-value { color: #9b2c1f; }
 .world-error { position: absolute; bottom: 0.7rem; left: 0.7rem; margin: 0; padding: 0.4rem 0.7rem; border-radius: 0.7rem; background: #fde8e6; color: #9b2c1f; font-weight: 700; }
+.world-empty {
+  position: absolute;
+  inset: 12% 8% auto;
+  z-index: 4;
+  display: grid;
+  gap: 0.75rem;
+  justify-items: start;
+  max-width: 22rem;
+  padding: 1rem 1.1rem;
+  border-radius: 1rem;
+  background: color-mix(in srgb, white 88%, #dff0fb);
+  box-shadow: 0 10px 30px color-mix(in srgb, #0f1b2d 18%, transparent);
+}
+.world-empty-copy { margin: 0; font-weight: 700; line-height: 1.4; color: #16324a; }
+.world-empty-action,
+.world-preview-clear {
+  border: 0;
+  border-radius: 999px;
+  background: #1f6feb;
+  color: white;
+  font-weight: 700;
+  padding: 0.45rem 0.9rem;
+  cursor: pointer;
+}
+.world-preview-clear { background: transparent; color: #1f6feb; padding: 0; text-decoration: underline; }
+.world-preview-note {
+  position: absolute;
+  bottom: 0.7rem;
+  left: 0.7rem;
+  margin: 0;
+  padding: 0.4rem 0.7rem;
+  border-radius: 0.7rem;
+  background: color-mix(in srgb, white 86%, #dff0fb);
+  font-weight: 650;
+  font-size: 0.85rem;
+}
 .world-panels { display: grid; gap: 0.75rem; grid-template-columns: 1fr; }
 @media (min-width: 820px) { .world-panels { grid-template-columns: minmax(16rem, 22rem) 1fr; } }
 .world-detail, .world-table { padding: 0.9rem; border-radius: 1rem; background: rgba(255, 255, 255, 0.72); backdrop-filter: blur(14px); }
@@ -4627,3 +5229,230 @@
 
 .hood-view-switch { display: flex; gap: 0.5rem; margin: 0 0 0.75rem; }
 .hood-layout[hidden] { display: none; }
+
+.resident-edit {
+  margin-top: 0.2rem;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: var(--relay-color-leaf-700, #147a4c);
+  font: 800 0.75rem/1.2 "Nunito", system-ui, sans-serif;
+  text-align: left;
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.profile-edit-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  display: grid;
+  place-items: center;
+  padding: 1rem;
+  background: #0b2a3340;
+  overscroll-behavior: none;
+}
+.profile-edit-card {
+  width: min(100%, 22rem);
+  display: grid;
+  gap: 0.75rem;
+  padding: 1.25rem;
+  border-radius: 1rem;
+  background: #fff;
+  box-shadow: 0 16px 40px #0c756e33;
+}
+.profile-edit-card h2 {
+  margin: 0;
+  font-size: 1.2rem;
+  font-weight: 900;
+}
+.profile-edit-lead {
+  margin: 0;
+  color: var(--relay-color-ink-soft);
+  font-size: 0.9rem;
+  line-height: 1.45;
+}
+.about-page {
+  display: grid;
+  gap: 1rem;
+  max-width: 44rem;
+}
+.about-title {
+  margin: 0;
+  font-size: clamp(1.6rem, 3vw, 2.1rem);
+  letter-spacing: -0.03em;
+}
+.about-lead,
+.about-section p {
+  margin: 0;
+  line-height: 1.5;
+  color: var(--relay-color-ink-soft);
+}
+.about-section {
+  display: grid;
+  gap: 0.75rem;
+}
+.about-section h2 {
+  margin: 0;
+  font-size: 1.15rem;
+}
+.about-list {
+  margin: 0;
+  padding-left: 1.2rem;
+  display: grid;
+  gap: 0.55rem;
+  line-height: 1.45;
+}
+
+.about-list-ordered {
+  list-style: decimal;
+}
+
+.about-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem 0.15rem;
+  font-weight: 800;
+}
+
+.activity-empty-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-top: 0.75rem;
+}
+
+.activity-empty-link {
+  text-decoration: none;
+}
+
+.activity-empty-tips {
+  margin: 0.85rem 0 0;
+  padding-left: 1.15rem;
+  display: grid;
+  gap: 0.35rem;
+  color: var(--relay-color-ink-soft);
+  font-size: 0.9rem;
+  font-weight: 650;
+  line-height: 1.4;
+}
+.profile-edit-card label {
+  display: grid;
+  gap: 0.3rem;
+  font-size: 0.82rem;
+  font-weight: 800;
+}
+.profile-edit-card input,
+.profile-edit-card textarea {
+  font: inherit;
+  font-weight: 600;
+  padding: 0.65rem 0.75rem;
+  border: 1px solid #d7e3ea;
+  border-radius: 0.7rem;
+  background: #fff;
+}
+.profile-edit-error {
+  margin: 0;
+  color: #9b2c1f;
+  font-size: 0.85rem;
+  font-weight: 700;
+}
+.profile-edit-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
+}
+.profile-edit-actions button {
+  font: 800 0.85rem/1 "Nunito", system-ui, sans-serif;
+  padding: 0.55rem 0.9rem;
+  border-radius: 999px;
+  cursor: pointer;
+}
+.profile-edit-actions button[type="button"] {
+  border: 1px solid #d7e3ea;
+  background: #fff;
+  color: #16324f;
+}
+.profile-edit-actions button[type="submit"] {
+  border: 0;
+  background: #147a4c;
+  color: #fff;
+}
+.profile-edit-actions button:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.address-autocomplete {
+  position: relative;
+  display: grid;
+  gap: 0.75rem;
+}
+
+.address-field {
+  display: grid;
+  gap: 0.3rem;
+  font-size: 0.82rem;
+  font-weight: 800;
+}
+
+.address-field input {
+  font: inherit;
+  font-weight: 600;
+  padding: 0.65rem 0.75rem;
+  border: 1px solid #d7e3ea;
+  border-radius: 0.7rem;
+  background: #fff;
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 2.75rem;
+}
+
+.login-form .address-field input {
+  min-height: 3rem;
+  padding: 0.75rem 0.9rem;
+  border: 1px solid var(--relay-border-soft);
+  border-radius: 0.85rem;
+  background: #ffffffcf;
+  font-size: 1rem;
+}
+
+.address-suggestion-list {
+  list-style: none;
+  margin: -0.35rem 0 0;
+  padding: 0.25rem;
+  border: 1px solid #d7e3ea;
+  border-radius: 0.75rem;
+  background: #fff;
+  box-shadow: 0 10px 24px #0c756e22;
+  display: grid;
+  gap: 0.15rem;
+  z-index: 5;
+}
+
+.address-suggestion {
+  display: block;
+  width: 100%;
+  text-align: left;
+  border: 0;
+  background: transparent;
+  border-radius: 0.55rem;
+  padding: 0.55rem 0.65rem;
+  font: 650 0.88rem/1.35 "Nunito", system-ui, sans-serif;
+  color: #16324f;
+  cursor: pointer;
+}
+
+.address-suggestion:hover,
+.address-suggestion:focus-visible {
+  background: #e8f7f1;
+  outline: none;
+}
+
+.address-verify-warning {
+  color: #9b2c1f;
+}
+
+.address-verified-note {
+  color: #147a4c;
+}

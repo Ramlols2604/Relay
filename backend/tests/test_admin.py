@@ -108,7 +108,14 @@ def test_resident_with_history_cannot_be_deleted_but_a_clean_one_can(client):
     assert blocked.status_code == 409
     clean = client.post(
         "/api/me",
-        json={"clerk_user_id": "user_new", "name": "New Person", "email": "n@example.test", "initials": "NP", "street": "1 Test St"},
+        json={
+            "clerk_user_id": "user_new",
+            "name": "New Person",
+            "email": "n@example.test",
+            "initials": "NP",
+            "street": "1 Test St",
+            "city": "Charlotte",
+        },
     )
     assert clean.status_code == 200, clean.text
     new_id = clean.json()["resident_id"]

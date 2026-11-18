@@ -1,12 +1,21 @@
-import { Bell, Map, MessageCircle, Package, ShieldCheck, type LucideIcon } from 'lucide-react'
-import { Link, NavLink, Outlet } from 'react-router'
+import { useEffect, useId, useLayoutEffect, useRef, useState, type FormEvent } from 'react'
+import { createPortal } from 'react-dom'
+import { Bell, CircleHelp, Map, MessageCircle, Package, ShieldCheck, type LucideIcon } from 'lucide-react'
+import { Link, NavLink, Outlet, useLocation } from 'react-router'
 import { UserButton } from '@clerk/react-router'
-import { demoCommunityLabel } from '../data/index.ts'
+import { api } from '../api/client.ts'
+import {
+  isDemoStreetAddress,
+  type VerifiedAddress,
+} from '../data/addressVerify.ts'
+import { placeLabel } from '../data/index.ts'
 import { sphereClass, type SectionSphere } from '../data/sectionSpheres.ts'
 import { useIsAdmin } from '../state/adminAccess.ts'
-import { useCurrentResident } from '../state/currentResident.ts'
+import { useCurrentResident } from '../state/currentResidentStore.ts'
+import { AddressAutocomplete } from './AddressAutocomplete.tsx'
 import { Atmosphere } from './Atmosphere.tsx'
 
+/** Map stays the landing route (`/`) but sits in the center of the dock. */
 const links: {
   to: string
   label: string
@@ -14,15 +23,24 @@ const links: {
   sphere: SectionSphere
   end?: boolean
 }[] = [
-  { to: '/', label: 'Chat', icon: MessageCircle, sphere: 'sky', end: true },
+  { to: '/chat', label: 'Chat', icon: MessageCircle, sphere: 'sky' },
   { to: '/my-stuff', label: 'My Inventory', icon: Package, sphere: 'mint' },
-  { to: '/neighborhood', label: 'Neighborhood', icon: Map, sphere: 'turquoise' },
+  { to: '/', label: 'Map', icon: Map, sphere: 'turquoise', end: true },
   { to: '/activity', label: 'Activity', icon: Bell, sphere: 'aqua' },
+  { to: '/about', label: 'About', icon: CircleHelp, sphere: 'sky' },
 ]
 
 export function AppLayout() {
+  const resident = useCurrentResident()
+  const label = placeLabel(resident.street, resident.city, Boolean(resident.id))
+  const showVerifyBanner = Boolean(resident.id) && resident.onboarded && !resident.addressVerified
+
+  const location = useLocation()
+  const mapHome =
+    location.pathname === '/' || location.pathname === '/neighborhood'
+
   return (
-    <div className="app-shell">
+    <div className={['app-shell', mapHome ? 'app-shell-map' : ''].filter(Boolean).join(' ')}>
       <a className="skip-link" href="#content">
         Skip to content
       </a>
@@ -31,7 +49,11 @@ export function AppLayout() {
         <aside className="sidebar shell-panel shell-aero-surface">
           <ShellAero idPrefix="sidebar" />
           <Wordmark />
-          <p className="sidebar-demo-label">{demoCommunityLabel}</p>
+          {label ? (
+            <p className="sidebar-place-label" title={label}>
+              {label}
+            </p>
+          ) : null}
           <PrimaryNav layout="side" />
           <div className="sidebar-foot">
             <ResidentCard />
@@ -44,9 +66,18 @@ export function AppLayout() {
               <Wordmark compact />
               <ResidentCard compact />
             </div>
-            <p className="mobile-demo-label">{demoCommunityLabel}</p>
+            {label && !mapHome ? (
+              <p className="mobile-place-label" title={label}>
+                {label}
+              </p>
+            ) : null}
           </header>
           <PrimaryNav layout="dock" />
+          {showVerifyBanner ? (
+            <p className="hint address-verify-banner" role="status" data-testid="address-verify-banner">
+              Verify your address to appear to neighbors
+            </p>
+          ) : null}
           <main id="content" className="page-canvas">
             <Outlet />
           </main>
@@ -115,19 +146,62 @@ function Wordmark({ compact = false }: { compact?: boolean }) {
   )
 }
 
+function routeMatches(pathname: string, to: string, end?: boolean): boolean {
+  if (to === '/') return pathname === '/' || pathname === '/neighborhood'
+  if (end) return pathname === to
+  return pathname === to || pathname.startsWith(`${to}/`)
+}
+
 function PrimaryNav({ layout }: { layout: 'side' | 'dock' }) {
   const isAdmin = useIsAdmin()
+  const location = useLocation()
   const shown = isAdmin
     ? [...links, { to: '/admin', label: 'Admin', icon: ShieldCheck, sphere: 'sky' as SectionSphere, end: false }]
     : links
+  const activeIndex = Math.max(
+    0,
+    shown.findIndex(({ to, end }) => routeMatches(location.pathname, to, end)),
+  )
+  const navRef = useRef<HTMLElement>(null)
+  const [indicator, setIndicator] = useState({ left: 0, width: 0, ready: false })
+
+  useLayoutEffect(() => {
+    if (layout !== 'dock' || !navRef.current) return
+    const measure = () => {
+      if (!navRef.current) return
+      const pills = Array.from(navRef.current.querySelectorAll<HTMLElement>('.nav-pill'))
+      const active = pills[activeIndex]
+      if (!active) return
+      setIndicator({ left: active.offsetLeft, width: active.offsetWidth, ready: true })
+    }
+    measure()
+    const frame = window.requestAnimationFrame(measure)
+    window.addEventListener('resize', measure)
+    return () => {
+      window.cancelAnimationFrame(frame)
+      window.removeEventListener('resize', measure)
+    }
+  }, [layout, activeIndex, shown.length, location.pathname])
+
   return (
     <nav
+      ref={navRef}
       aria-label="Primary"
       className={
         layout === 'side' ? 'side-nav' : 'mobile-dock shell-panel shell-aero-surface'
       }
     >
       {layout === 'dock' ? <ShellAero idPrefix="mobile-dock" /> : null}
+      {layout === 'dock' && indicator.ready ? (
+        <span
+          className="mobile-dock-indicator"
+          aria-hidden="true"
+          style={{
+            transform: `translate3d(${indicator.left}px, 0, 0)`,
+            width: `${indicator.width}px`,
+          }}
+        />
+      ) : null}
       {shown.map(({ to, label, icon: Icon, sphere, end }) => (
         <NavLink
           key={to}
@@ -138,7 +212,7 @@ function PrimaryNav({ layout }: { layout: 'side' | 'dock' }) {
               'nav-pill',
               sphereClass(sphere),
               layout === 'side' ? 'nav-pill-side' : '',
-              isActive ? 'nav-pill-active' : '',
+              isActive || (to === '/' && location.pathname === '/neighborhood') ? 'nav-pill-active' : '',
             ]
               .filter(Boolean)
               .join(' ')
@@ -160,6 +234,7 @@ function PrimaryNav({ layout }: { layout: 'side' | 'dock' }) {
 
 function ResidentCard({ compact = false }: { compact?: boolean }) {
   const resident = useCurrentResident()
+  const [editing, setEditing] = useState(false)
 
   return (
     <div className={compact ? 'resident resident-compact' : 'resident'}>
@@ -168,14 +243,177 @@ function ResidentCard({ compact = false }: { compact?: boolean }) {
         <span className="resident-name" aria-hidden={compact ? true : undefined}>
           {compact ? resident.shortName : resident.name}
         </span>
-        {compact ? (
-          <span className="sr-only">
-            {resident.name}, {resident.street}
-          </span>
-        ) : (
-          <span className="resident-place">{resident.street}</span>
-        )}
+        {compact ? <span className="sr-only">{resident.name}</span> : null}
+        {resident.id ? (
+          <button type="button" className="resident-edit" onClick={() => setEditing(true)}>
+            Edit profile
+          </button>
+        ) : null}
       </span>
+      {editing && resident.id
+        ? createPortal(
+            <EditProfileForm
+              residentId={resident.id}
+              street={resident.street}
+              city={resident.city}
+              about={resident.about}
+              addressVerified={resident.addressVerified}
+              formattedAddress={resident.formattedAddress}
+              state={resident.state}
+              latitude={resident.latitude}
+              longitude={resident.longitude}
+              onClose={() => setEditing(false)}
+              onSaved={async () => {
+                await resident.refreshProfile()
+                setEditing(false)
+              }}
+            />,
+            document.body,
+          )
+        : null}
+    </div>
+  )
+}
+
+function EditProfileForm({
+  residentId,
+  street,
+  city,
+  about,
+  addressVerified,
+  formattedAddress,
+  state,
+  latitude,
+  longitude,
+  onClose,
+  onSaved,
+}: {
+  residentId: string
+  street: string
+  city: string
+  about: string
+  addressVerified: boolean
+  formattedAddress: string
+  state: string
+  latitude: number | null
+  longitude: number | null
+  onClose: () => void
+  onSaved: () => Promise<void>
+}) {
+  const titleId = useId()
+  const [nextStreet, setNextStreet] = useState(street)
+  const [nextCity, setNextCity] = useState(city)
+  const [nextAbout, setNextAbout] = useState(about)
+  const [verified, setVerified] = useState<VerifiedAddress | null>(() =>
+    addressVerified && latitude != null && longitude != null
+      ? {
+          street,
+          city,
+          state,
+          formattedAddress: formattedAddress || `${street}, ${city}`,
+          latitude,
+          longitude,
+        }
+      : null,
+  )
+  const [geocoderDown, setGeocoderDown] = useState(false)
+  const [error, setError] = useState('')
+  const [busy, setBusy] = useState(false)
+
+  useEffect(() => {
+    const previous = document.body.style.overflow
+    document.body.style.overflow = 'hidden'
+    function onKey(event: KeyboardEvent) {
+      if (event.key === 'Escape') onClose()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => {
+      document.body.style.overflow = previous
+      window.removeEventListener('keydown', onKey)
+    }
+  }, [onClose])
+
+  async function submit(event: FormEvent) {
+    event.preventDefault()
+    if (!nextStreet.trim()) {
+      setError('Enter your street address.')
+      return
+    }
+    if (!nextCity.trim()) {
+      setError('Enter your city.')
+      return
+    }
+    if (isDemoStreetAddress(nextStreet)) {
+      setError('Replace the demo address (14 Willow Court) with your real street.')
+      return
+    }
+    if (!geocoderDown && !verified) {
+      setError('Pick an address suggestion to verify your street.')
+      return
+    }
+    setBusy(true)
+    setError('')
+    try {
+      await api.updateProfile({
+        clerk_user_id: residentId,
+        street: verified?.street ?? nextStreet.trim(),
+        city: verified?.city ?? nextCity.trim(),
+        about: nextAbout.trim(),
+        latitude: verified?.latitude ?? null,
+        longitude: verified?.longitude ?? null,
+        formatted_address: verified?.formattedAddress ?? null,
+        state: verified?.state ?? null,
+      })
+      await onSaved()
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : 'Could not save your profile.')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="profile-edit-backdrop" role="presentation" onClick={onClose}>
+      <form
+        className="profile-edit-card"
+        aria-labelledby={titleId}
+        onClick={(event) => event.stopPropagation()}
+        onSubmit={(event) => void submit(event)}
+      >
+        <h2 id={titleId}>Edit profile</h2>
+        <p className="profile-edit-lead">
+          Pick a verified street suggestion so neighbors can find you on the map. Change email or
+          password from the avatar menu (Clerk).
+        </p>
+        <AddressAutocomplete
+          street={nextStreet}
+          city={nextCity}
+          verified={verified}
+          onStreetChange={setNextStreet}
+          onCityChange={setNextCity}
+          onVerifiedChange={setVerified}
+          onGeocoderUnavailable={() => setGeocoderDown(true)}
+          disabled={busy}
+        />
+        <label>
+          About you
+          <textarea
+            value={nextAbout}
+            onChange={(event) => setNextAbout(event.target.value)}
+            rows={3}
+            placeholder="I lend tools on weekends."
+          />
+        </label>
+        {error ? <p className="profile-edit-error">{error}</p> : null}
+        <div className="profile-edit-actions">
+          <button type="button" onClick={onClose}>
+            Cancel
+          </button>
+          <button type="submit" disabled={busy}>
+            {busy ? 'Saving…' : 'Save'}
+          </button>
+        </div>
+      </form>
     </div>
   )
 }

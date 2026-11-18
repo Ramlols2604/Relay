@@ -13,6 +13,7 @@ from app import snowflake_store
 from app.auth import auth_disabled, current_actor
 from app.config import admin_user_ids, clerk_issuer, clerk_secret_key, ollama_host, ollama_model
 from app.db import get_session
+from app.extract import active_llm_order, provider_stats
 from app.logic import (
     _loan_dict,
     _requests_for_activity,
@@ -104,6 +105,9 @@ def overview(session: Session = Depends(get_session), _admin: str = Depends(requ
     handoff_status: dict[str, int] = {}
     for row in session.exec(select(Handoff)).all():
         handoff_status[row.status] = handoff_status.get(row.status, 0) + 1
+    from app.geocode_service import mapbox_access_token, usage_counts
+
+    geocode_usage = usage_counts(session)
     return {
         "counts": {
             "residents": _count(session, Resident),
@@ -115,11 +119,13 @@ def overview(session: Session = Depends(get_session), _admin: str = Depends(requ
             "handoffs": sum(handoff_status.values()),
             "group_buys": _count(session, GroupBuy),
             "exchanges_finished": _count(session, GardenEvent),
+            "geocode_calls": geocode_usage["geocode_calls"],
+            "geocode_cache_hits": geocode_usage["geocode_cache_hits"],
         },
         "loans_by_status": by_status,
         "requests_by_status": req_status,
         "handoffs_by_status": handoff_status,
-        "integrations": integrations(),
+        "integrations": {**integrations(), "mapbox": bool(mapbox_access_token())},
     }
 
 
@@ -133,6 +139,11 @@ def integrations() -> dict:
         "clerk": bool(clerk_secret_key() and clerk_issuer()),
         "admins_configured": len(admin_user_ids()),
         "auth_enforced": not auth_disabled(),
+        # Extraction provider order actually in use (RELAY_LLM_ORDER, minus unknown or
+        # unconfigured names) and how often each provider has answered or failed since
+        # this process started.
+        "llm_order": active_llm_order(),
+        "llm_provider_stats": provider_stats(),
     }
 
 
@@ -154,7 +165,8 @@ def list_residents(
             "loans": _count(session, Loan, (Loan.lender_id == row.id) | (Loan.borrower_id == row.id)),
         }
         for row in rows
-        if not needle or needle in f"{row.id} {row.name} {row.street} {row.city}".lower()
+        if not str(row.id).startswith("sample:")
+        and (not needle or needle in f"{row.id} {row.name} {row.street} {row.city}".lower())
     ]
 
 

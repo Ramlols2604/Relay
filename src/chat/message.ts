@@ -1,4 +1,4 @@
-import type { ApiProjectTool, ApiWindow } from '../api/types.ts'
+import type { ApiNearbyLender, ApiProjectTool, ApiWindow } from '../api/types.ts'
 import type { ExchangeDraft } from '../data/exchanges.ts'
 
 export type ChatAuthor = 'user' | 'relay'
@@ -30,7 +30,17 @@ export type ExchangeCard = {
   requestId: string
 }
 
-export type ChatCard = ToolChecklistCard | ExchangeCard
+/** Closest neighbors (and, optionally, demo listings) lending an item. */
+export type NearbyLendersChatCard = {
+  type: 'nearby-lenders'
+  item: { id: string; name: string }
+  radiusMiles: number
+  includeDemo: boolean
+  lenders: ApiNearbyLender[]
+  summary: string
+}
+
+export type ChatCard = ToolChecklistCard | ExchangeCard | NearbyLendersChatCard
 
 export type CardContent = {
   type: 'card'

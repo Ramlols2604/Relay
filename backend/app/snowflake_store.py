@@ -6,10 +6,21 @@ are isolated so the column names can be pointed at the real table later.
 """
 
 import json
+import logging
+import threading
+import time
+from contextlib import contextmanager
 from datetime import datetime
 
 from app.clock import aware, now
 from app.config import snowflake_settings
+
+logger = logging.getLogger(__name__)
+
+_lock = threading.RLock()
+_cached_conn = None
+_residents_ddl_done = False
+_inventory_ddl_done = False
 
 # Expected INVENTORY columns. Change this query when the upload is visible.
 INVENTORY_SQL = """
@@ -27,6 +38,7 @@ SELECT
     CATEGORY,
     CONDITION
 FROM INVENTORY
+WHERE COALESCE(IS_SAMPLE, FALSE) = FALSE
 """
 
 REQUEST_INSERT_SQL = """
@@ -54,6 +66,15 @@ class SnowflakeError(RuntimeError):
     pass
 
 
+class InventorySaveError(Exception):
+    """Write failed after the previous row was read; carry previous for compensation."""
+
+    def __init__(self, cause: BaseException, previous: dict | None):
+        super().__init__(str(cause))
+        self.cause = cause
+        self.previous = previous
+
+
 def configured() -> bool:
     return snowflake_settings() is not None
 
@@ -62,10 +83,12 @@ def status() -> dict:
     if not configured():
         return {"snowflake": "not_configured"}
     try:
-        with _connect() as conn:
+        with _connection() as conn:
+            started = time.perf_counter()
             cursor = conn.cursor()
             cursor.execute("SELECT 1")
             cursor.fetchone()
+            _log_ms("status.ping", started)
         return {"snowflake": "ok"}
     except Exception as exc:
         return {"snowflake": "error", "snowflake_message": str(exc)}
@@ -75,11 +98,26 @@ def fetch_inventory() -> dict:
     if not configured():
         return {"snowflake": "not_configured", "items": []}
     try:
-        with _connect() as conn:
+        with _connection() as conn:
+            started = time.perf_counter()
             cursor = conn.cursor()
-            cursor.execute(INVENTORY_SQL)
+            try:
+                cursor.execute(INVENTORY_SQL)
+            except Exception as exc:
+                # Older warehouses may not have IS_SAMPLE yet; still serve real rows.
+                if "IS_SAMPLE" not in str(exc).upper():
+                    raise
+                cursor.execute(
+                    """
+                    SELECT
+                        INVENTORY_ID, RESIDENT_ID, RESIDENT_NAME, X, Y, CATALOG_ITEM, QUANTITY,
+                        WILLING_TO_LEND, CONDITION_NOTE, AVAILABLE_WINDOWS, CATEGORY, CONDITION
+                    FROM INVENTORY
+                    """
+                )
             columns = [col[0].lower() for col in cursor.description]
             items = [dict(zip(columns, row)) for row in cursor.fetchall()]
+            _log_ms("fetch_inventory", started)
         return {"snowflake": "ok", "items": items}
     except Exception as exc:
         return {"snowflake": "error", "snowflake_message": str(exc), "items": []}
@@ -89,7 +127,8 @@ def insert_request(row: dict) -> None:
     if not configured():
         return
     try:
-        with _connect() as conn:
+        with _connection() as conn:
+            started = time.perf_counter()
             cursor = conn.cursor()
             cursor.execute(
                 REQUEST_INSERT_SQL,
@@ -108,6 +147,7 @@ def insert_request(row: dict) -> None:
                 ),
             )
             conn.commit()
+            _log_ms("insert_request", started)
     except Exception as exc:
         raise SnowflakeError(str(exc)) from exc
 
@@ -116,7 +156,8 @@ def fetch_requests() -> list[dict]:
     if not configured():
         return []
     try:
-        with _connect() as conn:
+        with _connection() as conn:
+            started = time.perf_counter()
             cursor = conn.cursor()
             cursor.execute(REQUESTS_SQL)
             columns = [col[0].lower() for col in cursor.description]
@@ -124,6 +165,7 @@ def fetch_requests() -> list[dict]:
             for raw in cursor.fetchall():
                 item = dict(zip(columns, raw))
                 rows.append(_normalize_request(item))
+            _log_ms("fetch_requests", started)
         return rows
     except Exception as exc:
         raise SnowflakeError(str(exc)) from exc
@@ -158,9 +200,10 @@ def upsert_profile(
         raise SnowflakeError("Snowflake is not configured")
     assigned = clerk_user_id
     try:
-        with _connect() as conn:
+        with _connection() as conn:
+            started = time.perf_counter()
             cursor = conn.cursor()
-            _ensure_residents(cursor)
+            _ensure_residents_once(cursor)
             cursor.execute(
                 "SELECT ASSIGNED_RESIDENT_ID FROM RESIDENTS WHERE CLERK_USER_ID = %s",
                 (clerk_user_id,),
@@ -186,12 +229,17 @@ def upsert_profile(
                     (clerk_user_id, name, email, initials, street, assigned),
                 )
             conn.commit()
+            _log_ms("upsert_profile", started)
             return assigned
     except Exception as exc:
         raise SnowflakeError(str(exc)) from exc
 
 
-def _ensure_residents(cursor) -> None:
+def _ensure_residents_once(cursor) -> None:
+    global _residents_ddl_done
+    if _residents_ddl_done:
+        return
+    started = time.perf_counter()
     try:
         cursor.execute(RESIDENTS_DDL)
     except Exception as exc:
@@ -204,6 +252,8 @@ def _ensure_residents(cursor) -> None:
         message = str(exc)
         if "Insufficient privileges" not in message and "already exists" not in message.lower():
             raise
+    _residents_ddl_done = True
+    _log_ms("ensure_residents_ddl", started)
 
 
 def _next_open_resident(cursor) -> str:
@@ -231,9 +281,9 @@ def _next_open_resident(cursor) -> str:
 INVENTORY_INSERT_SQL = """
 INSERT INTO INVENTORY (
     INVENTORY_ID, RESIDENT_ID, RESIDENT_NAME, X, Y, CATALOG_ITEM, QUANTITY,
-    WILLING_TO_LEND, CONDITION_NOTE, AVAILABLE_WINDOWS, CATEGORY, CONDITION
+    WILLING_TO_LEND, CONDITION_NOTE, AVAILABLE_WINDOWS, CATEGORY, CONDITION, IS_SAMPLE
 )
-SELECT %s, %s, %s, %s, %s, %s, %s, %s, %s, PARSE_JSON(%s), %s, %s
+SELECT %s, %s, %s, %s, %s, %s, %s, %s, %s, PARSE_JSON(%s), %s, %s, %s
 WHERE NOT EXISTS (
     SELECT 1 FROM INVENTORY WHERE INVENTORY_ID = %s
 )
@@ -262,19 +312,24 @@ WHERE INVENTORY_ID = %s
 
 def ensure_inventory_identity() -> None:
     """Add the stable id columns without recreating INVENTORY."""
-    if not configured():
+    global _inventory_ddl_done
+    if not configured() or _inventory_ddl_done:
         return
     statements = (
         "ALTER TABLE INVENTORY ADD COLUMN IF NOT EXISTS INVENTORY_ID VARCHAR",
         "ALTER TABLE INVENTORY ADD COLUMN IF NOT EXISTS CATEGORY VARCHAR",
         "ALTER TABLE INVENTORY ADD COLUMN IF NOT EXISTS CONDITION VARCHAR",
+        "ALTER TABLE INVENTORY ADD COLUMN IF NOT EXISTS IS_SAMPLE BOOLEAN DEFAULT FALSE",
     )
     try:
-        with _connect() as conn:
+        with _connection() as conn:
+            started = time.perf_counter()
             cursor = conn.cursor()
             for statement in statements:
                 cursor.execute(statement)
             conn.commit()
+            _inventory_ddl_done = True
+            _log_ms("ensure_inventory_identity", started)
     except Exception as exc:
         raise SnowflakeError(str(exc)) from exc
 
@@ -283,10 +338,28 @@ def count_inventory() -> int | None:
     if not configured():
         return None
     try:
-        with _connect() as conn:
+        with _connection() as conn:
+            started = time.perf_counter()
             cursor = conn.cursor()
             cursor.execute("SELECT COUNT(*) FROM INVENTORY")
             row = cursor.fetchone()
+            _log_ms("count_inventory", started)
+        return int(row[0]) if row else 0
+    except Exception as exc:
+        raise SnowflakeError(str(exc)) from exc
+
+
+def count_sample_inventory() -> int | None:
+    """Rows already marked IS_SAMPLE=true, so a rebuild can skip when there are enough."""
+    if not configured():
+        return None
+    try:
+        with _connection() as conn:
+            started = time.perf_counter()
+            cursor = conn.cursor()
+            cursor.execute("SELECT COUNT(*) FROM INVENTORY WHERE COALESCE(IS_SAMPLE, FALSE) = TRUE")
+            row = cursor.fetchone()
+            _log_ms("count_sample_inventory", started)
         return int(row[0]) if row else 0
     except Exception as exc:
         raise SnowflakeError(str(exc)) from exc
@@ -297,11 +370,13 @@ def insert_inventory_many(rows: list[dict], batch_size: int = 200) -> None:
         return
     payload = [_inventory_params(row) for row in rows]
     try:
-        with _connect() as conn:
+        with _connection() as conn:
+            started = time.perf_counter()
             cursor = conn.cursor()
             for start in range(0, len(payload), batch_size):
                 cursor.executemany(INVENTORY_INSERT_SQL, payload[start : start + batch_size])
             conn.commit()
+            _log_ms("insert_inventory_many", started)
     except Exception as exc:
         raise SnowflakeError(str(exc)) from exc
 
@@ -309,33 +384,111 @@ def insert_inventory_many(rows: list[dict], batch_size: int = 200) -> None:
 def upsert_inventory(row: dict) -> None:
     if not configured():
         return
-    try:
-        with _connect() as conn:
-            cursor = conn.cursor()
-            cursor.execute(INVENTORY_UPDATE_SQL, _inventory_update_params(row))
-            if cursor.rowcount == 0:
-                cursor.execute(INVENTORY_INSERT_SQL, _inventory_params(row))
-            conn.commit()
-    except Exception as exc:
-        raise SnowflakeError(str(exc)) from exc
+    _run_with_stale_retry("upsert_inventory", lambda conn: _upsert_inventory_on(conn, row))
 
 
 def fetch_inventory_row(inventory_id: str) -> dict | None:
     if not configured():
         return None
-    for row in fetch_inventory().get("items") or []:
-        if str(row.get("inventory_id") or "") == inventory_id:
-            return row
-    return None
+
+    def work(conn):
+        return _fetch_inventory_row_on(conn, inventory_id)
+
+    return _run_with_stale_retry("fetch_inventory_row", work)
+
+
+def save_inventory_row(row: dict) -> dict | None:
+    """Read the previous row and write the new one on one cached connection."""
+    if not configured():
+        return None
+    for attempt in range(2):
+        previous: dict | None = None
+        try:
+            with _connection() as conn:
+                started = time.perf_counter()
+                fetched = _fetch_inventory_row_on(conn, str(row["inventory_id"]))
+                previous = dict(fetched) if fetched is not None else None
+                try:
+                    _upsert_inventory_on(conn, row)
+                    conn.commit()
+                except Exception as write_exc:
+                    if _looks_stale(write_exc) and attempt == 0:
+                        _discard_connection()
+                        raise
+                    raise InventorySaveError(write_exc, previous) from write_exc
+                _log_ms("save_inventory_row", started)
+                return previous
+        except InventorySaveError:
+            raise
+        except Exception as exc:
+            if _looks_stale(exc) and attempt == 0:
+                continue
+            raise SnowflakeError(str(exc)) from exc
+    raise SnowflakeError("snowflake save failed")
 
 
 def delete_inventory_by_id(inventory_id: str) -> None:
     if not configured():
         return
     try:
-        with _connect() as conn:
+        with _connection() as conn:
+            started = time.perf_counter()
             cursor = conn.cursor()
             cursor.execute(INVENTORY_DELETE_SQL, (inventory_id,))
+            conn.commit()
+            _log_ms("delete_inventory_by_id", started)
+    except Exception as exc:
+        raise SnowflakeError(str(exc)) from exc
+
+
+INVENTORY_ROW_SQL = """
+SELECT
+    INVENTORY_ID,
+    RESIDENT_ID,
+    RESIDENT_NAME,
+    X,
+    Y,
+    CATALOG_ITEM,
+    QUANTITY,
+    WILLING_TO_LEND,
+    CONDITION_NOTE,
+    AVAILABLE_WINDOWS,
+    CATEGORY,
+    CONDITION
+FROM INVENTORY
+WHERE INVENTORY_ID = %s
+"""
+
+
+def _fetch_inventory_row_on(conn, inventory_id: str) -> dict | None:
+    cursor = conn.cursor()
+    cursor.execute(INVENTORY_ROW_SQL, (inventory_id,))
+    raw = cursor.fetchone()
+    if raw is None:
+        return None
+    columns = [col[0].lower() for col in cursor.description]
+    return dict(zip(columns, raw))
+
+
+def _upsert_inventory_on(conn, row: dict) -> None:
+    cursor = conn.cursor()
+    cursor.execute(INVENTORY_UPDATE_SQL, _inventory_update_params(row))
+    if cursor.rowcount == 0:
+        cursor.execute(INVENTORY_INSERT_SQL, _inventory_params(row))
+
+
+def ensure_sample_column() -> None:
+    """Ensure IS_SAMPLE exists so sample bulk loads never mix into matching."""
+    ensure_inventory_identity()
+
+
+def delete_sample_inventory() -> None:
+    if not configured():
+        return
+    try:
+        with _connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM INVENTORY WHERE COALESCE(IS_SAMPLE, FALSE) = TRUE")
             conn.commit()
     except Exception as exc:
         raise SnowflakeError(str(exc)) from exc
@@ -357,6 +510,7 @@ def _inventory_params(row: dict) -> tuple:
         json.dumps(windows),
         row.get("category") or "",
         row.get("condition") or "",
+        bool(row.get("is_sample", False)),
         inventory_id,
     )
 
@@ -381,15 +535,86 @@ def update_request(request_id: str, status: str, quantity: int) -> None:
     if not configured():
         return
     try:
-        with _connect() as conn:
+        with _connection() as conn:
+            started = time.perf_counter()
             cursor = conn.cursor()
             cursor.execute(REQUEST_UPDATE_SQL, (status, quantity, request_id))
             conn.commit()
+            _log_ms("update_request", started)
     except Exception as exc:
         raise SnowflakeError(str(exc)) from exc
 
 
-def _connect():
+def reset_connection_cache() -> None:
+    """Test helper: drop the cached connection and DDL flags."""
+    global _cached_conn, _residents_ddl_done, _inventory_ddl_done
+    with _lock:
+        if _cached_conn is not None:
+            try:
+                _cached_conn.close()
+            except Exception:
+                pass
+        _cached_conn = None
+        _residents_ddl_done = False
+        _inventory_ddl_done = False
+
+
+def _run_with_stale_retry(label: str, work):
+    for attempt in range(2):
+        try:
+            with _connection() as conn:
+                started = time.perf_counter()
+                result = work(conn)
+                if label != "fetch_inventory_row":
+                    conn.commit()
+                _log_ms(label, started)
+                return result
+        except Exception as exc:
+            if _looks_stale(exc) and attempt == 0:
+                continue
+            raise SnowflakeError(str(exc)) from exc
+    raise SnowflakeError(f"snowflake {label} failed")
+
+
+@contextmanager
+def _connection():
+    with _lock:
+        conn = _alive_connection()
+        try:
+            yield conn
+        except Exception as exc:
+            if _looks_stale(exc):
+                _discard_connection()
+            raise
+
+
+def _alive_connection():
+    global _cached_conn
+    if _cached_conn is not None:
+        return _cached_conn
+    started = time.perf_counter()
+    _cached_conn = _open_connection()
+    _log_ms("connect", started)
+    return _cached_conn
+
+
+def _discard_connection() -> None:
+    global _cached_conn
+    if _cached_conn is not None:
+        try:
+            _cached_conn.close()
+        except Exception:
+            pass
+    _cached_conn = None
+
+
+def _looks_stale(exc: BaseException) -> bool:
+    message = str(exc).lower()
+    markers = ("connection", "closed", "gone away", "broken", "not connected", "timeout", "eof")
+    return any(mark in message for mark in markers)
+
+
+def _open_connection():
     settings = snowflake_settings()
     if settings is None:
         raise SnowflakeError("Snowflake is not configured")
@@ -408,6 +633,11 @@ def _connect():
         login_timeout=10,
         network_timeout=10,
     )
+
+
+def _log_ms(label: str, started: float) -> None:
+    elapsed = (time.perf_counter() - started) * 1000
+    logger.info("snowflake.%s %.1fms", label, elapsed)
 
 
 def _iso(value) -> str | None:

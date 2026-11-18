@@ -1,5 +1,6 @@
 from datetime import datetime
 
+from sqlalchemy import Index
 from sqlmodel import Field, SQLModel
 
 
@@ -13,6 +14,11 @@ class Resident(SQLModel, table=True):
     y: float = 0
     city: str = ""
     about: str = ""
+    latitude: float | None = None
+    longitude: float | None = None
+    formatted_address: str = ""
+    state: str = ""
+    verified_at: datetime | None = None
 
 
 class CatalogItem(SQLModel, table=True):
@@ -156,3 +162,52 @@ class AuditLog(SQLModel, table=True):
     target_type: str
     target_id: str
     detail: str = ""
+
+
+class SampleListing(SQLModel, table=True):
+    """Generated lendable items on real US cities. Never matched into real loans."""
+
+    __tablename__ = "samplelisting"
+    __table_args__ = (Index("ix_samplelisting_lat_lng", "latitude", "longitude"),)
+
+    id: str = Field(primary_key=True)
+    latitude: float = Field(index=True)
+    longitude: float = Field(index=True)
+    city: str = ""
+    state: str = ""
+    item: str
+    condition: str = "Good"
+    quantity: int = 1
+    first_name: str = ""
+    last_initial: str = ""
+    max_loan_hours: int = 4
+    is_sample: bool = True
+
+
+class GeocodeCache(SQLModel, table=True):
+    """Normalized Mapbox query → JSON body. Shared across all users (30-day TTL)."""
+
+    __tablename__ = "geocodecache"
+
+    query_key: str = Field(primary_key=True)
+    result_json: str
+    created_at: datetime
+
+
+class GeocodeRateWindow(SQLModel, table=True):
+    """Per-user Mapbox call budget for the current hour."""
+
+    __tablename__ = "geocoderatewindow"
+
+    actor_id: str = Field(primary_key=True)
+    window_start: datetime
+    count: int = 0
+
+
+class UsageCounter(SQLModel, table=True):
+    """Simple named counters (geocode Mapbox calls, cache hits, …)."""
+
+    __tablename__ = "usagecounter"
+
+    name: str = Field(primary_key=True)
+    value: int = 0

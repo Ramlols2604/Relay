@@ -62,6 +62,8 @@ export default defineConfig({
         ...blankRemote,
         DATABASE_URL: 'sqlite:///./flows.db',
         RELAY_AUTH_DISABLED: '1',
+        // Stubbed Mapbox responses in geocode_service (no real quota use).
+        MAPBOX_ACCESS_TOKEN: 'pk.flow-test',
       },
     },
     {
@@ -70,7 +72,12 @@ export default defineConfig({
       url: `http://127.0.0.1:${webPort}`,
       timeout: 120_000,
       reuseExistingServer: false,
-      env: { ...process.env, VITE_API_URL: `http://127.0.0.1:${apiPort}` },
+      env: {
+        ...process.env,
+        VITE_API_URL: `http://127.0.0.1:${apiPort}`,
+        // Dummy token so address flows exercise Mapbox suggestion UI (requests are mocked).
+        VITE_MAPBOX_ACCESS_TOKEN: 'pk.flow-test',
+      },
     },
   ],
 })

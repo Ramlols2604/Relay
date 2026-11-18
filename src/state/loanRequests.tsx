@@ -9,7 +9,7 @@ import {
   type NeighborMatch,
 } from '../data/lending.ts'
 import { useActivityFeed } from './activityFeedStore.ts'
-import { useCurrentResident } from './currentResident.ts'
+import { useCurrentResident } from './currentResidentStore.ts'
 import { LoanRequestsContext } from './loanStore.ts'
 import { useShelfResident } from './shelfResidentStore.ts'
 

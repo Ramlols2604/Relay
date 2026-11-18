@@ -1,5 +1,7 @@
 /** Where each neighbor's house goes. Pure, so the same data always gives the same town. */
 
+import { sameCity } from '../data/cityMatch.ts'
+
 export const SPACING = 10
 
 export type WorldResident = {
@@ -10,6 +12,8 @@ export type WorldResident = {
   x: number
   y: number
   city: string
+  latitude?: number | null
+  longitude?: number | null
 }
 
 export type Lot = { id: string; col: number; row: number; x: number; z: number; resident: WorldResident }
@@ -40,7 +44,9 @@ export function layoutLots(
   const city = viewer?.city ?? ''
   const originX = viewer?.x ?? 0
   const originY = viewer?.y ?? 0
-  const local = residents.filter((resident) => !city || !resident.city || resident.city === city)
+  const local = residents.filter(
+    (resident) => !city || !resident.city || sameCity(resident.city, city),
+  )
   const distance = (resident: WorldResident) => Math.abs(resident.x - originX) + Math.abs(resident.y - originY)
 
   const rank = (resident: WorldResident) => (resident.id === viewerId ? 0 : mustInclude.has(resident.id) ? 1 : 2)

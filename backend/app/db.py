@@ -41,6 +41,7 @@ def init_db() -> None:
     engine = get_engine()
     SQLModel.metadata.create_all(engine)
     _ensure_resident_columns(engine)
+    _ensure_samplelisting_columns(engine)
 
 
 def _ensure_resident_columns(engine) -> None:
@@ -55,6 +56,16 @@ def _ensure_resident_columns(engine) -> None:
             connection.execute(text("ALTER TABLE resident ADD COLUMN city VARCHAR DEFAULT ''"))
         if "about" not in columns:
             connection.execute(text("ALTER TABLE resident ADD COLUMN about VARCHAR DEFAULT ''"))
+        if "latitude" not in columns:
+            connection.execute(text("ALTER TABLE resident ADD COLUMN latitude FLOAT"))
+        if "longitude" not in columns:
+            connection.execute(text("ALTER TABLE resident ADD COLUMN longitude FLOAT"))
+        if "formatted_address" not in columns:
+            connection.execute(text("ALTER TABLE resident ADD COLUMN formatted_address VARCHAR DEFAULT ''"))
+        if "state" not in columns:
+            connection.execute(text("ALTER TABLE resident ADD COLUMN state VARCHAR DEFAULT ''"))
+        if "verified_at" not in columns:
+            connection.execute(text("ALTER TABLE resident ADD COLUMN verified_at DATETIME"))
     _ensure_shelf_columns(engine)
 
 
@@ -68,6 +79,22 @@ def _ensure_shelf_columns(engine) -> None:
     if "catalog_item_id" not in columns:
         with engine.begin() as connection:
             connection.execute(text("ALTER TABLE shelfitem ADD COLUMN catalog_item_id VARCHAR"))
+
+
+def _ensure_samplelisting_columns(engine) -> None:
+    from sqlalchemy import inspect, text
+
+    inspector = inspect(engine)
+    if "samplelisting" not in inspector.get_table_names():
+        return
+    columns = {column["name"] for column in inspector.get_columns("samplelisting")}
+    with engine.begin() as connection:
+        if "first_name" not in columns:
+            connection.execute(text("ALTER TABLE samplelisting ADD COLUMN first_name VARCHAR DEFAULT ''"))
+        if "last_initial" not in columns:
+            connection.execute(text("ALTER TABLE samplelisting ADD COLUMN last_initial VARCHAR DEFAULT ''"))
+        if "max_loan_hours" not in columns:
+            connection.execute(text("ALTER TABLE samplelisting ADD COLUMN max_loan_hours INTEGER DEFAULT 4"))
 
 
 def reset_db() -> None:

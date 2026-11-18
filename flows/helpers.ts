@@ -23,10 +23,14 @@ export async function post(request: APIRequestContext, url: string, data?: unkno
   return response.json()
 }
 
+let loanWindowSlot = 0
+
 /** A confirmed loan of `item` from `lender` to `borrower`, due two days from now. */
 export async function confirmedLoan(request: APIRequestContext, item: string, lender: string, borrower: string) {
   const name = item[0].toUpperCase() + item.slice(1)
   const shelf = await shelfItem(request, lender, name)
+  // Stagger windows so a retried beforeAll does not collide with loans left in the same DB.
+  const hours = (loanWindowSlot++ % 24) * 3
   const loan = await post(
     request,
     '/api/loans',
@@ -35,8 +39,8 @@ export async function confirmedLoan(request: APIRequestContext, item: string, le
       lender_id: lender,
       catalog_item_id: item,
       inventory_id: shelf.inventory_id,
-      window_start: naive(inDays(2)),
-      window_end: naive(inDays(2, 2)),
+      window_start: naive(inDays(2, hours)),
+      window_end: naive(inDays(2, hours + 2)),
     },
     201,
   )

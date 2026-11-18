@@ -32,6 +32,10 @@ backend/.env
 backend/.venv
 backend/relay.db
 backend/e2e.db
+# Raw place dumps for sample listings (download locally; do not commit)
+backend/data/cities15000.txt
+backend/data/uscities.csv
+backend/data/*.zip
 
 # Playwright auth state and reports
 /playwright/.clerk/

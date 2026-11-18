@@ -9,9 +9,21 @@ export type WorldData = {
   garden: number
   groupBuys: ApiGroupBuy[]
   error: string | null
+  /** First /api/residents + catalog attempt finished (ok or error). */
+  peopleReady: boolean
+  /** First garden + shared-demand attempt finished (ok or error). */
+  talliesReady: boolean
 }
 
-const empty: WorldData = { residents: [], names: new Map(), garden: 0, groupBuys: [], error: null }
+const empty: WorldData = {
+  residents: [],
+  names: new Map(),
+  garden: 0,
+  groupBuys: [],
+  error: null,
+  peopleReady: false,
+  talliesReady: false,
+}
 
 /** Real neighbors, catalog names, the exchange tally and group buys, all from the API. */
 export function useWorldData(): WorldData {
@@ -26,6 +38,7 @@ export function useWorldData(): WorldData {
         setData((previous) => ({
           ...previous,
           error: null,
+          peopleReady: true,
           residents: residents.map((row) => ({
             id: row.id,
             name: row.name,
@@ -33,12 +46,20 @@ export function useWorldData(): WorldData {
             street: row.street,
             x: row.x,
             y: row.y,
-            city: (row as { city?: string }).city ?? '',
+            city: row.city ?? '',
+            latitude: row.latitude ?? null,
+            longitude: row.longitude ?? null,
           })),
           names: new Map(catalog.map((item) => [item.id, item.name])),
         }))
       } catch (caught) {
-        if (live) setData((previous) => ({ ...previous, error: caught instanceof Error ? caught.message : 'The Relay API is not answering.' }))
+        if (live) {
+          setData((previous) => ({
+            ...previous,
+            peopleReady: true,
+            error: caught instanceof Error ? caught.message : 'The Relay API is not answering.',
+          }))
+        }
       }
     }
     const loadTallies = async () => {
@@ -46,6 +67,7 @@ export function useWorldData(): WorldData {
       if (!live) return
       setData((previous) => ({
         ...previous,
+        talliesReady: true,
         garden: garden.status === 'fulfilled' ? garden.value.count : previous.garden,
         groupBuys: shared.status === 'fulfilled' ? (shared.value.group_buys ?? []) : previous.groupBuys,
       }))

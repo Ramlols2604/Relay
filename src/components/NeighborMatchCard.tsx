@@ -18,6 +18,8 @@ import type { ApiWindow } from '../api/types.ts'
 import { useActivityFeed } from '../state/activityFeedStore.ts'
 import { useLoanRequests } from '../state/loanStore.ts'
 import { statusTone } from '../data/status.ts'
+import { pointsFromDistances } from '../data/chatMapPreview.ts'
+import { ChatMapPreview } from './ChatMapPreview.tsx'
 import { StatusBadge, StatusTimeline } from './StatusTimeline.tsx'
 import { ToolPortrait } from './ToolPortrait.tsx'
 
@@ -78,6 +80,13 @@ function ToolMatchGroup({
   const matches = tool.neighbors.map((neighbor) =>
     neighborMatch(tool, neighbor, projectWindow, directory),
   )
+  const mapPoints = pointsFromDistances(
+    tool.neighbors.map((neighbor) => ({
+      id: neighbor.resident_id,
+      label: neighbor.resident_name,
+      distance: neighbor.distance,
+    })),
+  )
 
   return (
     <section className="match-group" aria-labelledby={headingId}>
@@ -92,26 +101,29 @@ function ToolMatchGroup({
       ) : matches.length === 0 ? (
         <p className="match-none">No nearby match for {tool.name}. Nobody listed one to lend.</p>
       ) : (
-        <ul className="match-list">
-          {matches.map((match) => {
-            const request =
-              requests.find((loan) => loan.listingId === match.id && loan.status !== 'Returned') ??
-              requests.find((loan) => loan.listingId === match.id) ??
-              null
-            return (
-              <li key={match.id}>
-                <NeighborMatchCard
-                  match={match}
-                  request={request}
-                  onRequestLoan={(pickupId, returnId) => onRequestLoan(match, pickupId, returnId)}
-                  onAdvanceLoan={() => {
-                    if (request) onAdvanceLoan(request.id)
-                  }}
-                />
-              </li>
-            )
-          })}
-        </ul>
+        <>
+          <ChatMapPreview points={mapPoints} title={`Lenders near you for ${tool.name}`} />
+          <ul className="match-list">
+            {matches.map((match) => {
+              const request =
+                requests.find((loan) => loan.listingId === match.id && loan.status !== 'Returned') ??
+                requests.find((loan) => loan.listingId === match.id) ??
+                null
+              return (
+                <li key={match.id}>
+                  <NeighborMatchCard
+                    match={match}
+                    request={request}
+                    onRequestLoan={(pickupId, returnId) => onRequestLoan(match, pickupId, returnId)}
+                    onAdvanceLoan={() => {
+                      if (request) onAdvanceLoan(request.id)
+                    }}
+                  />
+                </li>
+              )
+            })}
+          </ul>
+        </>
       )}
     </section>
   )

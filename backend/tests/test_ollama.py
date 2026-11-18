@@ -1,10 +1,27 @@
 import json
+import logging
+import re
 
 import httpx
 import pytest
 
-from app.extract import extract_message
+import app.extract as extract_module
+from app.extract import (
+    PROVIDER_NAMES,
+    Extraction,
+    _prompt,
+    _provider_time_budgets,
+    active_llm_order,
+    extract_message,
+    provider_stats,
+)
 from app.models import CatalogItem
+
+
+@pytest.fixture(autouse=True)
+def _reset_provider_stats(monkeypatch):
+    """Provider success/fail counters are process-global; give each test a clean slate."""
+    monkeypatch.setattr(extract_module, "_PROVIDER_STATS", {name: {"success": 0, "fail": 0} for name in PROVIDER_NAMES})
 
 
 def _catalog():
@@ -96,3 +113,103 @@ def test_admin_overview_reports_ollama_without_leaking_the_host(client, monkeypa
     assert "10.0.0.5" not in json.dumps(data)
     monkeypatch.setenv("OLLAMA_HOST", "")
     assert client.get("/api/admin/overview").json()["integrations"]["ollama"] == {"configured": False, "model": None}
+
+
+def _configure_all_providers(monkeypatch):
+    monkeypatch.setenv("GEMINI_API_KEY", "gemini-key")
+    monkeypatch.setenv("OLLAMA_HOST", "localhost:11434")
+    monkeypatch.setenv("BACKBOARD_API_KEY", "backboard-key")
+
+
+def test_default_llm_order_is_gemini_then_ollama_then_backboard(monkeypatch):
+    monkeypatch.delenv("RELAY_LLM_ORDER", raising=False)
+    _configure_all_providers(monkeypatch)
+    assert active_llm_order() == ["gemini", "ollama", "backboard"]
+
+
+def test_llm_order_skips_providers_that_are_not_configured(monkeypatch):
+    monkeypatch.delenv("RELAY_LLM_ORDER", raising=False)
+    monkeypatch.setenv("GEMINI_API_KEY", "")
+    monkeypatch.setenv("OLLAMA_HOST", "")
+    monkeypatch.setenv("BACKBOARD_API_KEY", "backboard-key")
+    assert active_llm_order() == ["backboard"]
+
+
+def test_custom_llm_order_from_env_is_respected(monkeypatch):
+    _configure_all_providers(monkeypatch)
+    monkeypatch.setenv("RELAY_LLM_ORDER", "backboard,ollama")
+    # Gemini is configured but not named, so it is left out entirely.
+    assert active_llm_order() == ["backboard", "ollama"]
+
+
+def test_unknown_provider_name_is_ignored_with_a_warning(monkeypatch, caplog):
+    _configure_all_providers(monkeypatch)
+    monkeypatch.setenv("RELAY_LLM_ORDER", "gemini,carrier-pigeon,ollama")
+    with caplog.at_level(logging.WARNING, logger="app.extract"):
+        order = active_llm_order()
+    assert order == ["gemini", "ollama"]
+    assert any("carrier-pigeon" in record.message for record in caplog.records)
+
+
+def test_duplicate_provider_names_only_count_once(monkeypatch):
+    _configure_all_providers(monkeypatch)
+    monkeypatch.setenv("RELAY_LLM_ORDER", "gemini,gemini,ollama")
+    assert active_llm_order() == ["gemini", "ollama"]
+
+
+def test_all_providers_failing_falls_back_to_the_built_in_parser(monkeypatch):
+    _configure_all_providers(monkeypatch)
+    monkeypatch.delenv("RELAY_LLM_ORDER", raising=False)
+    monkeypatch.setattr("app.extract._from_gemini", lambda *_a, **_k: None)
+    monkeypatch.setattr("app.extract._from_ollama", lambda *_a, **_k: None)
+    monkeypatch.setattr("app.extract._from_backboard", lambda *_a, **_k: None)
+    result = extract_message("I need a drill", _catalog())
+    assert result.intent == "need"
+    assert result.item_ids == ["drill"]
+    assert provider_stats() == {
+        "gemini": {"success": 0, "fail": 1},
+        "ollama": {"success": 0, "fail": 1},
+        "backboard": {"success": 0, "fail": 1},
+    }
+
+
+def test_provider_stats_count_a_success(monkeypatch):
+    monkeypatch.delenv("RELAY_LLM_ORDER", raising=False)
+    monkeypatch.setenv("GEMINI_API_KEY", "")
+    monkeypatch.setenv("BACKBOARD_API_KEY", "")
+    monkeypatch.setenv("OLLAMA_HOST", "localhost:11434")
+    monkeypatch.setattr("app.extract._from_ollama", lambda *_a, **_k: Extraction("need", ["drill"], 1, None, None, None))
+    result = extract_message("I need a drill", _catalog())
+    assert result.item_ids == ["drill"]
+    assert provider_stats()["ollama"] == {"success": 1, "fail": 0}
+
+
+def test_provider_time_budget_caps_the_first_provider_at_sixty_percent():
+    assert _provider_time_budgets(8.0, 0) == []
+    assert _provider_time_budgets(8.0, 1) == [8.0]
+    budgets = _provider_time_budgets(8.0, 3)
+    assert budgets[0] == pytest.approx(4.8)
+    assert budgets[1] == pytest.approx(1.6)
+    assert budgets[2] == pytest.approx(1.6)
+    assert sum(budgets) == pytest.approx(8.0)
+    # The first provider never gets more than 60% of the total, no matter how many
+    # providers are behind it.
+    two = _provider_time_budgets(10.0, 2)
+    assert two[0] == pytest.approx(6.0)
+    assert two[1] == pytest.approx(4.0)
+
+
+def test_prompt_never_includes_private_resident_fields():
+    """The LLM prompt is built from the user's message and catalog names only."""
+    catalog = _catalog()
+    text = "I need two drills this weekend"
+    prompt = _prompt(text, catalog)
+
+    private_values = ["avery@example.com", "555-867-5309", "14 Willow Court"]
+    for value in private_values:
+        assert value not in prompt
+
+    assert re.search(r"[\w.+-]+@[\w.-]+\.[a-z]{2,}", prompt, re.IGNORECASE) is None
+    assert re.search(r"\b\d{3}[-.\s]?\d{3}[-.\s]?\d{4}\b", prompt) is None
+    for word in ("email", "phone", "address", "street"):
+        assert word not in prompt.lower()

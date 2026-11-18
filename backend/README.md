@@ -45,9 +45,40 @@ Confirmed requests expect a `REQUESTS` table: `ID`, `RESIDENT_ID`, `KIND` (`need
 
 Catalog names the matcher knows: Drill, Saw, Level, Sander, Clamps, Tape measure, Notebooks, Ladder. Aliases such as "cordless drill" map to Drill. A drill's demo price is 6000 cents ($60).
 
-`OLLAMA_HOST` (for example `http://127.0.0.1:11434`) and `OLLAMA_MODEL` (default `llama3.2`) point chat understanding at a local Ollama model. It is tried first, then Gemini, then Backboard, then the built-in parser, all inside the same time limit.
+Chat extraction tries providers in `RELAY_LLM_ORDER` (default `gemini,ollama,backboard`), skipping any that are not configured, then the built-in parser — all inside the same time limit. Set `GEMINI_API_KEY` for Gemini-first. `OLLAMA_HOST` (for example `http://127.0.0.1:11434`) and `OLLAMA_MODEL` (default `llama3.2`) enable a local Ollama model when it appears in the order.
+
+Mapbox: put a **public, URL-restricted** token in the repo-root `.env.local` as `VITE_MAPBOX_ACCESS_TOKEN` (Map GL only). Put a **separate secret** token in `backend/.env` as `MAPBOX_ACCESS_TOKEN` (or `MAPBOX_TOKEN`) for `/api/geocode`. The API will not fall back to the Vite public token.
 
 `RELAY_ADMIN_USER_IDS` is a comma-separated list of Clerk user ids allowed to use `/api/admin` and the Admin page. Empty means nobody.
+
+## Demo listings (map pins)
+
+Server startup seeds a small, fast bootstrap set of `BOOTSTRAP_COUNT = 5,000` demo listings (`app/sample_listings.py`, `ensure_sample_listings`) only when the `samplelisting` table is empty — it never regenerates or tops up to the full nationwide set, so boot stays quick. All rows have `is_sample=true`, never match into real loans, and are hidden from the admin people list. The map and API label them "Demo listing" and never offer a way to contact the generated person. The UI turns demo pins **on automatically only when the signed-in account has no real neighbors** in the current city view; otherwise they stay off unless the user toggles them. Chat nearby-lender cards mark demos and disable "Request to borrow"; the API rejects borrow asks against sample ids.
+
+To build the full `TARGET_COUNT = 100,000` population-weighted nationwide dataset (reproducible with `seed=42`), run `backend/scripts/build_sample_listings.py` offline. It is safe to rerun: if the table already holds at least `--count` rows it prints a message and skips all work (pass `--force` to rebuild anyway).
+
+Quickest option — no download required, uses the built-in nationwide city list:
+
+```bash
+cd backend
+.venv/bin/python scripts/build_sample_listings.py --bootstrap --sqlite-only
+```
+
+For a more complete set of US places, download one of these into `backend/data/` first (gitignored — do not commit the raw dump):
+
+- GeoNames `cities15000.txt`: https://download.geonames.org/export/dump/cities15000.zip (unzip into `backend/data/cities15000.txt`)
+- SimpleMaps US Cities (basic, free): https://simplemaps.com/data/us-cities (save the CSV as `backend/data/uscities.csv`)
+
+```bash
+cd backend
+curl -L -o data/cities15000.zip https://download.geonames.org/export/dump/cities15000.zip
+unzip -o data/cities15000.zip cities15000.txt -d data/
+.venv/bin/python scripts/build_sample_listings.py --places data/cities15000.txt --sqlite-only
+```
+
+Each generated row gets a random first name + last initial (from a ~40-name pool and A-Z), an item drawn from `CATALOG`, quantity 1-5, a condition, and `max_loan_hours` copied from that item's `default_loan_hours` in `app/seed.py`. The top 200 cities by population each get a dense cluster of listings jittered 0.1-3 miles from the city center, so the default 2-mile radius search is never empty there (e.g. Cary NC, Raleigh NC, Chicago IL).
+
+Other flags: `--count` (default `TARGET_COUNT`), `--seed` (default `42`), `--sqlite-only` (always write local SQLite even if Snowflake env vars are set), `--force` (rebuild even if the table already has enough rows).
 
 `GEMINI_API_KEY` is optional. With no key, chat uses the catalog and a bookshelf tool list.
 

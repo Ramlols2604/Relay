@@ -1,6 +1,7 @@
 import {
   lazy,
   Suspense,
+  useEffect,
   useId,
   useLayoutEffect,
   useRef,
@@ -8,7 +9,18 @@ import {
   type FormEvent,
   type KeyboardEvent,
 } from 'react'
-import { Hammer, HandHelping, MessageCircle, Notebook, Send, type LucideIcon } from 'lucide-react'
+import { useSearchParams } from 'react-router'
+import {
+  Hammer,
+  HandHelping,
+  MessageCircle,
+  Notebook,
+  Pencil,
+  Plus,
+  RotateCcw,
+  Send,
+  type LucideIcon,
+} from 'lucide-react'
 import { api, apiBase } from '../api/client.ts'
 import { replyFromApi } from '../chat/reply.ts'
 import {
@@ -19,12 +31,49 @@ import {
 } from '../chat/message.ts'
 import { RelayMark } from '../components/RelayMark.tsx'
 import { ExchangeCard } from '../components/ExchangeCard.tsx'
+import { NearbyLendersCard } from '../components/NearbyLendersCard.tsx'
 import { ToolChecklistCard } from '../components/ToolChecklistCard.tsx'
-import { demoCommunityLabel } from '../data/index.ts'
 import { sphereClass } from '../data/sectionSpheres.ts'
+import { readStoredRadius } from '../data/searchRadius.ts'
 import { useActivityFeed } from '../state/activityFeedStore.ts'
-import { useCurrentResident } from '../state/currentResident.ts'
+import { useCurrentResident } from '../state/currentResidentStore.ts'
 import { useShelfResident } from '../state/shelfResidentStore.ts'
+import {
+  readSampleListingsPreference,
+  resolveSampleListingsOn,
+} from '../data/sampleListings.ts'
+import { sameCity } from '../data/cityMatch.ts'
+
+const chatDraftKey = (shelfId: string) => `relay:chat:draft:${shelfId}`
+const chatTranscriptKey = (shelfId: string) => `relay:chat:transcript:${shelfId}`
+
+function readSession<T>(key: string): T | null {
+  try {
+    const raw = sessionStorage.getItem(key)
+    if (!raw) return null
+    return JSON.parse(raw) as T
+  } catch {
+    return null
+  }
+}
+
+function writeSession(key: string, value: unknown): void {
+  try {
+    sessionStorage.setItem(key, JSON.stringify(value))
+  } catch {
+    /* private browsing / quota */
+  }
+}
+
+function restoreMessages(shelfId: string): ChatMessage[] {
+  const saved = readSession<ChatMessage[]>(chatTranscriptKey(shelfId))
+  if (!Array.isArray(saved)) return []
+  // Drop in-flight "thinking" bubbles so a refresh does not leave them stuck.
+  return saved.filter(
+    (message) =>
+      !(message.content.type === 'text' && message.content.tone === 'pending'),
+  )
+}
 
 const RelayCatCharacter = lazy(async () => {
   const mod = await import('../components/RelayCatCharacter.tsx')
@@ -61,10 +110,16 @@ const inputMaxHeight = 136
 
 export function ChatPage() {
   const headingId = useId()
-  const [messages, setMessages] = useState<ChatMessage[]>([])
-  const [draft, setDraft] = useState('')
   const shelfId = useShelfResident()
+  const [messages, setMessages] = useState<ChatMessage[]>(() => restoreMessages(shelfId))
+  const [searchParams, setSearchParams] = useSearchParams()
+  const draftParam = searchParams.get('draft')
+  const [draft, setDraft] = useState(() => draftParam ?? readSession<string>(chatDraftKey(shelfId)) ?? '')
+  const [appliedDraftParam, setAppliedDraftParam] = useState<string | null>(null)
+  const [editing, setEditing] = useState(false)
+  const [hasRealNeighbors, setHasRealNeighbors] = useState(false)
   const { refresh } = useActivityFeed()
+  const you = useCurrentResident()
   const logRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
   const [pondEl, setPondEl] = useState<HTMLDivElement | null>(null)
@@ -72,6 +127,57 @@ export function ChatPage() {
 
   const canSend = draft.trim().length > 0
   const announcement = latestRelayAnnouncement(messages)
+  const includeDemoListings = resolveSampleListingsOn(
+    readSampleListingsPreference(shelfId),
+    hasRealNeighbors,
+  )
+
+  // `?draft=` prefills the composer (e.g. "Ask in chat" from the Neighborhood page). Adjusting
+  // state during render (not an effect) avoids a cascading-render setState-in-effect warning.
+  if (draftParam !== null && draftParam !== appliedDraftParam) {
+    setAppliedDraftParam(draftParam)
+    setDraft(draftParam)
+  }
+
+  // Clear the query param and focus the composer once the draft above has been applied.
+  useEffect(() => {
+    if (appliedDraftParam === null) return
+    const next = new URLSearchParams(searchParams)
+    next.delete('draft')
+    setSearchParams(next, { replace: true })
+    inputRef.current?.focus()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [appliedDraftParam])
+
+  useEffect(() => {
+    writeSession(chatDraftKey(shelfId), draft)
+  }, [draft, shelfId])
+
+  useEffect(() => {
+    writeSession(chatTranscriptKey(shelfId), messages)
+  }, [messages, shelfId])
+
+  useEffect(() => {
+    let cancel = false
+    void api
+      .residents()
+      .then((rows) => {
+        if (cancel) return
+        const city = you.city.trim()
+        setHasRealNeighbors(
+          rows.some(
+            (row) =>
+              row.id !== shelfId && (!city || !row.city || sameCity(row.city, city)),
+          ),
+        )
+      })
+      .catch(() => {
+        if (!cancel) setHasRealNeighbors(false)
+      })
+    return () => {
+      cancel = true
+    }
+  }, [shelfId, you.city])
 
   useLayoutEffect(() => {
     const input = inputRef.current
@@ -93,12 +199,17 @@ export function ChatPage() {
   async function appendExchange(text: string) {
     const trimmed = text.trim()
     if (!trimmed) return
+    setEditing(false)
     const pending = createTextMessage('relay', 'Relay is thinking…', 'pending')
     setMessages((current) => [...current, createTextMessage('user', trimmed), pending])
 
     let reply: ChatMessage
     try {
-      reply = replyFromApi(await api.chat(shelfId, trimmed), trimmed)
+      const card = await api.chat(shelfId, trimmed, {
+        includeDemoListings,
+        radiusMiles: readStoredRadius(shelfId),
+      })
+      reply = replyFromApi(card, trimmed)
     } catch {
       reply = createTextMessage(
         'relay',
@@ -124,56 +235,130 @@ export function ChatPage() {
     event.currentTarget.form?.requestSubmit()
   }
 
+  function startNewChat() {
+    setEditing(false)
+    setMessages([])
+    setDraft('')
+    writeSession(chatTranscriptKey(shelfId), [])
+    writeSession(chatDraftKey(shelfId), '')
+    inputRef.current?.focus()
+  }
+
+  function resetChat() {
+    if (messages.length === 0 && !draft.trim() && !editing) return
+    if (!window.confirm('Clear this chat thread? You can start a new one afterward.')) return
+    startNewChat()
+  }
+
+  function editUserMessage(messageId: string) {
+    const index = messages.findIndex((message) => message.id === messageId)
+    if (index < 0) return
+    const target = messages[index]
+    if (!target || target.author !== 'user' || target.content.type !== 'text') return
+    const text = target.content.text
+    // Keep earlier turns. Pull this message (and its Relay reply) out so the user can
+    // fix the wording in the composer and send again — do not wipe the whole chat.
+    const prior = messages.slice(0, index)
+    const following = messages[index + 1]
+    const afterReply =
+      following && following.author === 'relay' ? index + 2 : index + 1
+    const later = messages.slice(afterReply)
+    setMessages([...prior, ...later])
+    setDraft(text)
+    setEditing(true)
+    window.requestAnimationFrame(() => {
+      const input = inputRef.current
+      if (!input) return
+      input.focus()
+      const end = text.length
+      input.setSelectionRange(end, end)
+    })
+  }
+
+  const showWelcome = messages.length === 0 && !editing
+
+  const lastUserTextId = [...messages]
+    .reverse()
+    .find((message) => message.author === 'user' && message.content.type === 'text')?.id
+
   return (
     <section className="chat-page" aria-labelledby={headingId}>
       <div className="chat-pond" ref={setPondEl}>
-        <div className={messages.length === 0 ? 'chat-log chat-log-empty' : 'chat-log'} ref={logRef}>
+        <div className={showWelcome ? 'chat-log chat-log-empty' : 'chat-log'} ref={logRef}>
           <header className="chat-welcome">
-            <div className="chat-hero-badge">
-              <span className="icon-chip sphere-sky">
-                <MessageCircle aria-hidden="true" size={22} />
-              </span>
-              <div className="grid gap-1">
-                <p className="eyebrow">Talk it through</p>
-                <h1 id={headingId} className="chat-title">
-                  Chat (the Robo Cat)
-                </h1>
-              </div>
-            </div>
-            <h2 className="chat-welcome-headline">What are we making happen?</h2>
-            <p className="chat-intro">
-              Relay is how neighbors share a project, a need, or something to give away. A few plain
-              sentences are enough to start the next handoff.
-            </p>
-            <p className="chat-demo-label">{demoCommunityLabel}</p>
-            {messages.length === 0 ? (
-              <div className="chat-prompts">
-                <p className="chat-prompt-label">Try one</p>
-                <div className="chat-prompt-grid">
-                  {examples.map(({ kicker, text, icon: Icon, sphere }) => (
-                    <button
-                      key={text}
-                      type="button"
-                      className="chat-prompt"
-                      onClick={() => void appendExchange(text)}
-                    >
-                      <span className={`icon-chip chat-prompt-icon ${sphereClass(sphere)}`}>
-                        <Icon aria-hidden="true" size={20} />
-                      </span>
-                      <span className="chat-prompt-copy">
-                        <span className="chat-prompt-kicker">{kicker}</span>
-                        <span className="chat-prompt-text">{text}</span>
-                      </span>
-                    </button>
-                  ))}
+            <div className="chat-welcome-top">
+              <div className="chat-hero-badge">
+                <span className="icon-chip sphere-sky">
+                  <MessageCircle aria-hidden="true" size={22} />
+                </span>
+                <div className="grid gap-1">
+                  <p className="eyebrow">Talk it through</p>
+                  <h1 id={headingId} className="chat-title">
+                    Chat (the Robo Cat)
+                  </h1>
                 </div>
               </div>
+              <div className="chat-toolbar" role="group" aria-label="Chat actions">
+                <button type="button" className="chat-tool-btn" onClick={startNewChat}>
+                  <Plus aria-hidden="true" size={16} />
+                  New chat
+                </button>
+                <button
+                  type="button"
+                  className="chat-tool-btn"
+                  onClick={resetChat}
+                  disabled={messages.length === 0 && !draft.trim() && !editing}
+                >
+                  <RotateCcw aria-hidden="true" size={16} />
+                  Reset
+                </button>
+              </div>
+            </div>
+            {showWelcome ? (
+              <>
+                <h2 className="chat-welcome-headline">What are we making happen?</h2>
+                <p className="chat-intro">
+                  Ask for the closest ladder, start a project, or offer something to lend. A few plain
+                  sentences are enough.
+                </p>
+                <div className="chat-prompts">
+                  <p className="chat-prompt-label">Try one</p>
+                  <div className="chat-prompt-grid">
+                    {examples.map(({ kicker, text, icon: Icon, sphere }) => (
+                      <button
+                        key={text}
+                        type="button"
+                        className="chat-prompt"
+                        onClick={() => void appendExchange(text)}
+                      >
+                        <span className={`icon-chip chat-prompt-icon ${sphereClass(sphere)}`}>
+                          <Icon aria-hidden="true" size={20} />
+                        </span>
+                        <span className="chat-prompt-copy">
+                          <span className="chat-prompt-kicker">{kicker}</span>
+                          <span className="chat-prompt-text">{text}</span>
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </>
+            ) : null}
+            {editing ? (
+              <p className="chat-editing-banner" role="status">
+                Editing your message — fix it below, then send again.
+              </p>
             ) : null}
           </header>
           {messages.length > 0 ? (
             <ol className="chat-thread" aria-label="Conversation">
               {messages.map((message) => (
-                <ChatBubble key={message.id} message={message} />
+                <ChatBubble
+                  key={message.id}
+                  message={message}
+                  canEdit={!editing && message.id === lastUserTextId}
+                  onEdit={() => editUserMessage(message.id)}
+                />
               ))}
             </ol>
           ) : null}
@@ -199,7 +384,11 @@ export function ChatPage() {
                   className="chat-input"
                   rows={1}
                   value={draft}
-                  placeholder="A project, something you need, or something to give away"
+                  placeholder={
+                    editing
+                      ? 'Edit your message, then send'
+                      : 'A project, something you need, or something to give away'
+                  }
                   enterKeyHint="send"
                   autoComplete="off"
                   onChange={(event) => setDraft(event.target.value)}
@@ -209,7 +398,11 @@ export function ChatPage() {
                   <Send aria-hidden="true" size={18} />
                 </button>
               </div>
-              <p className="hint chat-hint">Enter sends. Shift + Enter adds a line.</p>
+              <p className="hint chat-hint">
+                {editing
+                  ? 'Send to replace that turn. Reset clears the whole chat.'
+                  : 'Enter sends. Shift + Enter adds a line.'}
+              </p>
             </div>
           </div>
         </form>
@@ -218,7 +411,15 @@ export function ChatPage() {
   )
 }
 
-function ChatBubble({ message }: { message: ChatMessage }) {
+function ChatBubble({
+  message,
+  canEdit = false,
+  onEdit,
+}: {
+  message: ChatMessage
+  canEdit?: boolean
+  onEdit?: () => void
+}) {
   const resident = useCurrentResident()
   const isUser = message.author === 'user'
   const isCard = message.content.type === 'card'
@@ -255,7 +456,15 @@ function ChatBubble({ message }: { message: ChatMessage }) {
           .filter(Boolean)
           .join(' ')}
       >
-        <p className="chat-speaker">{isUser ? 'You' : 'Relay'}</p>
+        <div className="chat-bubble-head">
+          <p className="chat-speaker">{isUser ? 'You' : 'Relay'}</p>
+          {canEdit && onEdit ? (
+            <button type="button" className="chat-edit-btn" onClick={onEdit}>
+              <Pencil aria-hidden="true" size={14} />
+              Edit
+            </button>
+          ) : null}
+        </div>
         <MessageBody content={message.content} />
       </div>
     </li>
@@ -293,6 +502,16 @@ function ChatCardSlot({ card }: { card: ChatCard }) {
       )
     case 'exchange':
       return <ExchangeCard draft={card.draft} requestId={card.requestId} />
+    case 'nearby-lenders':
+      return (
+        <NearbyLendersCard
+          item={card.item}
+          radiusMiles={card.radiusMiles}
+          includeDemo={card.includeDemo}
+          lenders={card.lenders}
+          summary={card.summary}
+        />
+      )
   }
 }
 
@@ -309,10 +528,19 @@ function relayAnnouncementText(message: ChatMessage) {
     case 'text':
       return message.content.text
     case 'card':
-      return `${message.content.card.title}. ${message.content.card.summary}`
+      return cardAnnouncementText(message.content.card)
     default: {
       const unreachable: never = message.content
       return unreachable
     }
+  }
+}
+
+function cardAnnouncementText(card: ChatCard) {
+  switch (card.type) {
+    case 'nearby-lenders':
+      return `${card.item.name}. ${card.summary}`
+    default:
+      return `${card.title}. ${card.summary}`
   }
 }

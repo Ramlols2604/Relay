@@ -12,6 +12,19 @@ const screenOf = (page: Page, id: string) =>
 
 /** Click where an entity is on screen, the way a person would. */
 async function clickEntity(page: Page, id: string) {
+  // Wait until the projected point stops moving so a late town rebuild cannot
+  // invalidate coordinates measured a frame earlier.
+  await expect
+    .poll(async () => {
+      const first = await screenOf(page, id)
+      if (!first) return ''
+      await page.waitForTimeout(120)
+      const second = await screenOf(page, id)
+      if (!second) return ''
+      if (Math.abs(first.x - second.x) > 1 || Math.abs(first.y - second.y) > 1) return ''
+      return `${Math.round(second.x)},${Math.round(second.y)}`
+    }, { timeout: 15_000 })
+    .not.toBe('')
   const at = await screenOf(page, id)
   expect(at, `${id} should be on screen`).not.toBeNull()
   const box = (await page.getByTestId('world-canvas').boundingBox())!

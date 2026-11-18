@@ -13,6 +13,10 @@ export type ApiResident = {
   initials: string
   x: number
   y: number
+  city: string
+  latitude?: number | null
+  longitude?: number | null
+  address_verified?: boolean
 }
 
 export type ApiCatalogItem = {
@@ -148,12 +152,43 @@ export type ApiNoMatchCard = {
   request_id?: string
 }
 
+/** One neighbor (or demo listing) lending an item, from the `nearby_lenders` chat card. */
+export type ApiNearbyLender = {
+  /** Real shelf id, or a `sample:` demo listing id. */
+  inventory_id: string | null
+  /** Real resident id; null for a demo listing. */
+  lender_id: string | null
+  /** First name plus last initial. Never a full name or contact field. */
+  display_name: string
+  distance_miles: number
+  item: string
+  quantity: number
+  condition: string
+  max_loan_hours: number
+  available_windows: ApiLenderWindow[]
+  demo: boolean
+  /** Always null. Relay never sends email, phone, or an address to the chat client. */
+  contact: null
+  latitude: number
+  longitude: number
+}
+
+export type ApiNearbyLendersCard = {
+  type: 'nearby_lenders'
+  item: { id: string; name: string }
+  radius_miles: number
+  include_demo: boolean
+  lenders: ApiNearbyLender[]
+  message: string
+}
+
 export type ApiChatCard =
   | ApiToolListCard
   | ApiConfirmationCard
   | ApiMatchCard
   | ApiLoanStatusCard
   | ApiNoMatchCard
+  | ApiNearbyLendersCard
 
 export type ApiActivity = {
   requests: ApiRequest[]
@@ -189,6 +224,23 @@ export type ApiInventory = {
   snowflake_message?: string
   items: ApiInventoryItem[]
   resident_id?: string
+}
+
+/** Generated map pin from GET /api/listings — never a real loanable shelf row. */
+export type ApiSampleListing = {
+  id: string
+  latitude: number
+  longitude: number
+  city: string
+  state: string
+  item: string
+  condition: string
+  quantity: number
+  first_name: string
+  last_initial: string
+  max_loan_hours: number
+  is_sample: true
+  distance_miles?: number
 }
 
 export type ApiGroupBuyMember = { resident_id: string; name: string; initials: string }
@@ -238,7 +290,9 @@ export type AdminOverview = {
     | 'requests'
     | 'handoffs'
     | 'group_buys'
-    | 'exchanges_finished',
+    | 'exchanges_finished'
+    | 'geocode_calls'
+    | 'geocode_cache_hits',
     number
   >
   loans_by_status: Record<string, number>
@@ -252,6 +306,11 @@ export type AdminOverview = {
     clerk: boolean
     admins_configured: number
     auth_enforced: boolean
+    mapbox?: boolean
+    /** RELAY_LLM_ORDER, with unknown or unconfigured providers dropped. The order extract_message actually tries. */
+    llm_order: string[]
+    /** Success/fail counts per LLM provider since the API process started (in-memory, resets on restart). */
+    llm_provider_stats: Record<string, { success: number; fail: number }>
   }
 }
 
@@ -273,4 +332,21 @@ export type AdminAuditEntry = {
   target_type: string
   target_id: string
   detail: Record<string, unknown>
+}
+
+/** Profile returned by GET/POST/PATCH /api/me. */
+export type ApiProfile = {
+  id?: string
+  name?: string
+  resident_id: string | null
+  street: string
+  city: string
+  about: string
+  onboarded: boolean
+  state?: string
+  formatted_address?: string
+  latitude?: number | null
+  longitude?: number | null
+  verified_at?: string | null
+  address_verified?: boolean
 }

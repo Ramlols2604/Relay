@@ -23,4 +23,12 @@ export default defineConfig([
     files: ['app/**/*.tsx'],
     rules: { 'react-refresh/only-export-components': 'off' },
   },
+  {
+    files: ['src/state/**/*.{ts,tsx}'],
+    rules: {
+      'react-refresh/only-export-components': 'off',
+      'react-hooks/set-state-in-effect': 'off',
+      'react-hooks/preserve-manual-memoization': 'off',
+    },
+  },
 ])

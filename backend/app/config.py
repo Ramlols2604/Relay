@@ -110,3 +110,11 @@ def admin_user_ids() -> set[str]:
     """Clerk user ids allowed to use /api/admin, from RELAY_ADMIN_USER_IDS (comma separated)."""
     raw = os.environ.get("RELAY_ADMIN_USER_IDS", "")
     return {part.strip() for part in raw.split(",") if part.strip()}
+
+
+def llm_order() -> list[str]:
+    """Requested extraction provider order from RELAY_LLM_ORDER (comma separated, case
+    insensitive). Defaults to "gemini,ollama,backboard". Entries are lower-cased and kept
+    in the order given; validating the names is the caller's job (see app.extract)."""
+    raw = os.environ.get("RELAY_LLM_ORDER", "").strip() or "gemini,ollama,backboard"
+    return [part.strip().lower() for part in raw.split(",") if part.strip()]

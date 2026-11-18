@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import type { AdminOverview } from '../api/types.ts'
-import { auditSummary, centsFromInput, dollars, integrationRows, parseTab } from './admin.ts'
+import { auditSummary, centsFromInput, dollars, integrationRows, llmOrderSummary, parseTab } from './admin.ts'
 
 test('unknown or missing tabs fall back to overview', () => {
   assert.equal(parseTab('audit'), 'audit')
@@ -28,6 +28,8 @@ const base: AdminOverview['integrations'] = {
   clerk: true,
   admins_configured: 0,
   auth_enforced: true,
+  llm_order: [],
+  llm_provider_stats: {},
 }
 
 test('integration rows say what is missing and what is live', () => {
@@ -41,6 +43,7 @@ test('integration rows say what is missing and what is live', () => {
       ['Backboard', 'missing'],
       ['Clerk sign-in', 'ok'],
       ['Admin access', 'missing'],
+      ['Mapbox geocode', 'missing'],
     ],
   )
   const live = integrationRows({
@@ -49,13 +52,23 @@ test('integration rows say what is missing and what is live', () => {
     ollama: { configured: true, model: 'mistral' },
     gemini: true,
     admins_configured: 2,
+    mapbox: true,
+    llm_order: ['ollama', 'gemini'],
+    llm_provider_stats: { ollama: { success: 3, fail: 1 }, gemini: { success: 0, fail: 2 } },
   })
   assert.equal(live[0].state, 'ok')
-  assert.equal(live[1].note, 'Chat tries mistral first.')
+  assert.equal(live[1].note, 'Tried #1 in the extraction order (mistral). 3 ok, 1 failed.')
   assert.equal(live[2].state, 'ok')
+  assert.equal(live[2].note, 'Tried #2 in the extraction order. 0 ok, 2 failed.')
   assert.equal(live[5].note, '2 admins allowed.')
+  assert.equal(live[6].state, 'ok')
   const broken = integrationRows({ ...base, snowflake: { snowflake: 'error', snowflake_message: 'bad login' } })
   assert.deepEqual([broken[0].state, broken[0].note], ['error', 'bad login'])
+})
+
+test('llmOrderSummary shows the active order or says nothing is configured', () => {
+  assert.equal(llmOrderSummary(['gemini', 'ollama', 'backboard']), 'gemini \u2192 ollama \u2192 backboard')
+  assert.equal(llmOrderSummary([]), 'No extraction provider is configured; using the built-in parser only.')
 })
 
 test('audit entries read as sentences', () => {

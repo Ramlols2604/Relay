@@ -270,6 +270,10 @@ def test_backboard_then_regex_fallback(client, monkeypatch):
     from app.extract import extract_message
 
     catalog = _catalog()
+    # Gemini stays unconfigured (no API key) so it is skipped outright; Backboard needs a
+    # key to be in the active provider order at all.
+    monkeypatch.setenv("GEMINI_API_KEY", "")
+    monkeypatch.setenv("BACKBOARD_API_KEY", "test-key")
     monkeypatch.setattr("app.extract._from_gemini", lambda *_args, **_kwargs: None)
 
     def backboard(_text, _catalog, _now):
@@ -359,6 +363,7 @@ def test_failed_snowflake_mirror_does_not_keep_the_shelf_row(client, monkeypatch
         raise SnowflakeError("warehouse down")
 
     monkeypatch.setattr("app.logic.snowflake_store.upsert_inventory", fail)
+    monkeypatch.setattr("app.logic.snowflake_store.save_inventory_row", fail)
     response = client.post(
         "/api/inventory",
         json={
@@ -434,6 +439,10 @@ def test_sqlite_failure_removes_the_snowflake_row(client, monkeypatch):
 
     monkeypatch.setattr("app.logic.snowflake_store.configured", lambda: True)
     monkeypatch.setattr("app.logic.snowflake_store.upsert_inventory", upsert)
+    monkeypatch.setattr(
+        "app.logic.snowflake_store.save_inventory_row",
+        lambda row: (upsert(row), None)[1],
+    )
     monkeypatch.setattr("app.logic.snowflake_store.delete_inventory_by_id", delete_id)
     monkeypatch.setattr("app.logic._commit_session", lambda _session: (_ for _ in ()).throw(RuntimeError("sqlite failed")))
     with pytest.raises(RuntimeError, match="sqlite failed"):
@@ -460,8 +469,14 @@ def test_inventory_id_survives_rename(client, monkeypatch):
     def upsert(row):
         remote[row["inventory_id"]] = dict(row)
 
+    def save_row(row):
+        previous = dict(remote[row["inventory_id"]]) if row["inventory_id"] in remote else None
+        upsert(row)
+        return previous
+
     monkeypatch.setattr("app.logic.snowflake_store.configured", lambda: True)
     monkeypatch.setattr("app.logic.snowflake_store.upsert_inventory", upsert)
+    monkeypatch.setattr("app.logic.snowflake_store.save_inventory_row", save_row)
     monkeypatch.setattr("app.logic.snowflake_store.delete_inventory_by_id", lambda _item_id: None)
     monkeypatch.setattr(
         "app.logic.snowflake_store.fetch_inventory",
@@ -632,6 +647,11 @@ def test_failed_update_restores_the_remote_row(client, monkeypatch):
     monkeypatch.setattr("app.logic.snowflake_store.configured", lambda: True)
     monkeypatch.setattr("app.logic.snowflake_store.upsert_inventory", upsert)
     monkeypatch.setattr("app.logic.snowflake_store.fetch_inventory_row", lambda item_id: store.get(item_id))
+    def save_row(row):
+        previous = store.get(row["inventory_id"])
+        upsert(row)
+        return dict(previous) if previous else None
+    monkeypatch.setattr("app.logic.snowflake_store.save_inventory_row", save_row)
     monkeypatch.setattr("app.logic.snowflake_store.delete_inventory_by_id", lambda item_id: store.pop(item_id, None))
     created = client.post(
         "/api/inventory",
@@ -667,6 +687,53 @@ def test_zero_quantity_is_sent_to_snowflake():
     }
     assert _inventory_params(row)[6] == 0
     assert _inventory_update_params(row)[5] == 0
+
+
+def test_normalize_city_key_ignores_case_and_spaces():
+    from app.logic import normalize_city_key
+
+    assert normalize_city_key("Charlotte") == "charlotte"
+    assert normalize_city_key("charlotte ") == "charlotte"
+    assert normalize_city_key("Char Lotte") == "charlotte"
+    assert normalize_city_key("Cary") != normalize_city_key("Charlotte")
+
+
+def test_loans_allow_city_names_that_only_differ_by_spaces(client):
+    from app.db import session_scope
+    from app.models import Resident
+
+    with session_scope() as session:
+        jordan = session.get(Resident, "jordan")
+        jordan.city = "charlotte "
+        jordan.x = 1
+        jordan.y = 0
+        session.add(jordan)
+        session.commit()
+    offered = client.post(
+        "/api/inventory",
+        json={
+            "resident_id": "jordan",
+            "name": "Drill",
+            "category": "Tools",
+            "quantity": 1,
+            "condition": "Good",
+            "notes": "",
+            "available_to_lend": True,
+        },
+    )
+    assert offered.status_code == 201, offered.text
+    ok = client.post(
+        "/api/loans",
+        json={
+            "borrower_id": "avery",
+            "lender_id": "jordan",
+            "catalog_item_id": "drill",
+            "inventory_id": offered.json()["inventory_id"],
+            "window_start": "2026-10-21T09:00:00",
+            "window_end": "2026-10-21T11:00:00",
+        },
+    )
+    assert ok.status_code == 201, ok.text
 
 
 def test_loans_stay_in_one_city_and_free_dates_do_not_block(client):
@@ -796,8 +863,14 @@ def test_failed_remote_only_update_restores_the_row(client, monkeypatch):
     def upsert(row):
         store[row["inventory_id"]] = dict(row)
 
+    def save_row(row):
+        previous = dict(store[row["inventory_id"]]) if row["inventory_id"] in store else None
+        upsert(row)
+        return previous
+
     monkeypatch.setattr("app.logic.snowflake_store.configured", lambda: True)
     monkeypatch.setattr("app.logic.snowflake_store.upsert_inventory", upsert)
+    monkeypatch.setattr("app.logic.snowflake_store.save_inventory_row", save_row)
     monkeypatch.setattr("app.logic.snowflake_store.fetch_inventory_row", lambda item_id: dict(store[item_id]) if item_id in store else None)
     monkeypatch.setattr("app.logic.snowflake_store.delete_inventory_by_id", lambda item_id: store.pop(item_id, None))
     monkeypatch.setattr("app.logic._commit_session", lambda _session: (_ for _ in ()).throw(RuntimeError("sqlite failed")))
@@ -984,8 +1057,19 @@ def test_failed_recovery_is_retried_after_a_timeout(client, monkeypatch):
             raise TimeoutError("snowflake timed out")
         store[row["inventory_id"]] = dict(row)
 
+    from app.snowflake_store import InventorySaveError
+
+    def save_row(row):
+        previous = dict(store[row["inventory_id"]]) if row["inventory_id"] in store else None
+        try:
+            upsert(row)
+        except Exception as exc:
+            raise InventorySaveError(exc, previous) from exc
+        return previous
+
     monkeypatch.setattr("app.logic.snowflake_store.configured", lambda: True)
     monkeypatch.setattr("app.logic.snowflake_store.upsert_inventory", upsert)
+    monkeypatch.setattr("app.logic.snowflake_store.save_inventory_row", save_row)
     monkeypatch.setattr(
         "app.logic.snowflake_store.fetch_inventory_row",
         lambda item_id: dict(store[item_id]) if item_id in store else None,
@@ -1025,8 +1109,17 @@ def test_failed_recovery_is_retried_after_a_timeout(client, monkeypatch):
             raise TimeoutError("restore timed out")
         store[row["inventory_id"]] = dict(row)
 
+    def save_until_commit(row):
+        previous = dict(store[row["inventory_id"]]) if row["inventory_id"] in store else None
+        try:
+            upsert_until_commit(row)
+        except Exception as exc:
+            raise InventorySaveError(exc, previous) from exc
+        return previous
+
     monkeypatch.setattr("app.logic._commit_session", commit_fails)
     monkeypatch.setattr("app.logic.snowflake_store.upsert_inventory", upsert_until_commit)
+    monkeypatch.setattr("app.logic.snowflake_store.save_inventory_row", save_until_commit)
     with pytest.raises(RuntimeError, match="sqlite failed"):
         client.patch(
             "/api/inventory/remote-drill",
@@ -1275,3 +1368,101 @@ def test_loan_overdue_and_due_soon_flags(client):
 
     returned = client.post(f"/api/loans/{loan_id}/return").json()
     assert (returned["overdue"], returned["overdue_minutes"], returned["due_soon"]) == (False, None, False)
+
+
+def test_onboarding_requires_street_and_returns_it(client):
+    missing = client.post(
+        "/api/me",
+        json={
+            "clerk_user_id": "user_street",
+            "name": "Street Person",
+            "email": "s@example.test",
+            "initials": "SP",
+            "street": "   ",
+            "city": "Charlotte",
+        },
+    )
+    assert missing.status_code == 422
+    assert "Street address is required" in missing.json()["detail"]
+
+    no_city = client.post(
+        "/api/me",
+        json={
+            "clerk_user_id": "user_street",
+            "name": "Street Person",
+            "email": "s@example.test",
+            "initials": "SP",
+            "street": "22 Maple Street",
+            "city": "",
+        },
+    )
+    assert no_city.status_code == 422
+    assert "City is required" in no_city.json()["detail"]
+
+    saved = client.post(
+        "/api/me",
+        json={
+            "clerk_user_id": "user_street",
+            "name": "Street Person",
+            "email": "s@example.test",
+            "initials": "SP",
+            "street": " 22 Maple Street ",
+            "city": " Charlotte ",
+            "about": "Near the park",
+        },
+    )
+    assert saved.status_code == 200, saved.text
+    body = saved.json()
+    assert body["street"] == "22 Maple Street"
+    assert body["city"] == "Charlotte"
+    assert body["about"] == "Near the park"
+    assert body["onboarded"] is True
+
+    loaded = client.get("/api/me", params={"clerk_user_id": "user_street"})
+    assert loaded.status_code == 200
+    assert loaded.json()["street"] == "22 Maple Street"
+    assert loaded.json()["onboarded"] is True
+
+
+def test_patch_me_updates_address_and_refuses_another_user(client):
+    created = client.post(
+        "/api/me",
+        json={
+            "clerk_user_id": "user_patch",
+            "name": "Patch Person",
+            "email": "p@example.test",
+            "initials": "PP",
+            "street": "10 Oak Ave",
+            "city": "Raleigh",
+        },
+    )
+    assert created.status_code == 200, created.text
+
+    patched = client.patch(
+        "/api/me",
+        json={
+            "clerk_user_id": "user_patch",
+            "street": "55 Pine Road",
+            "city": "Durham",
+            "about": "Tools and ladders",
+        },
+    )
+    assert patched.status_code == 200, patched.text
+    body = patched.json()
+    assert body["street"] == "55 Pine Road"
+    assert body["city"] == "Durham"
+    assert body["about"] == "Tools and ladders"
+    assert body["onboarded"] is True
+
+    from app.auth import current_actor
+    from app.main import app
+
+    app.dependency_overrides[current_actor] = lambda: "someone_else"
+    try:
+        refused = client.patch(
+            "/api/me",
+            json={"clerk_user_id": "user_patch", "street": "1 Stolen St", "city": "Charlotte"},
+        )
+        assert refused.status_code == 403
+    finally:
+        app.dependency_overrides.pop(current_actor, None)
