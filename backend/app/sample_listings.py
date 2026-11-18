@@ -17,8 +17,9 @@ from app.seed import CATALOG
 SEED = 42
 # Full nationwide dataset, built offline by scripts/build_sample_listings.py.
 TARGET_COUNT = 100_000
-# Small, fast seed used at server startup so boot time stays short.
-BOOTSTRAP_COUNT = 5_000
+# Startup seed when the table is empty or still below this floor. Kept under
+# TARGET_COUNT so boot stays reasonable; run the build script for the full set.
+BOOTSTRAP_COUNT = 25_000
 CONDITIONS = ("Excellent", "Good", "Fair")
 DEFAULT_LOAN_HOURS = 4
 # Dense local clusters so a default 2-mile radius search is never empty in a big city.
@@ -352,14 +353,14 @@ def sample_listing_count(session: Session) -> int:
 
 
 def ensure_sample_listings(session: Session, count: int = BOOTSTRAP_COUNT) -> int:
-    """Seed a small bootstrap set once at startup; never top up to TARGET_COUNT here.
+    """Seed or top up to ``count`` (default BOOTSTRAP_COUNT) at startup.
 
-    Keeps server boot fast. The full ``TARGET_COUNT`` (100,000) nationwide dataset is
-    built offline with ``scripts/build_sample_listings.py``, which already checks for
-    an existing table of that size and skips work when it finds one.
+    If the table already has at least ``count`` rows (including a full TARGET_COUNT
+    build), leave it alone. Never expands all the way to TARGET_COUNT here — that
+    still belongs to ``scripts/build_sample_listings.py``.
     """
     existing = sample_listing_count(session)
-    if existing > 0:
+    if existing >= count:
         return 0
     rows = generate_listings(resolve_places(), count=count, seed=SEED)
     return replace_sample_listings(session, rows)

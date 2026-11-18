@@ -17,7 +17,7 @@ test('demo street detection', () => {
   assert.equal(isDemoStreetAddress('100 Main Street'), false)
 })
 
-test('accepts only address features with relevance >= 0.9 in the chosen city', () => {
+test('accepts address features with relevance >= 0.82 in the chosen city', () => {
   const good = {
     place_type: ['address'],
     relevance: 0.95,
@@ -25,20 +25,24 @@ test('accepts only address features with relevance >= 0.9 in the chosen city', (
   }
   assert.equal(isAcceptableAddressFeature(good, 'Cary'), true)
   assert.equal(isAcceptableAddressFeature(good, 'cary'), true)
+  assert.equal(
+    isAcceptableAddressFeature({ ...good, relevance: 0.84 }, 'Cary'),
+    true,
+  )
 
   assert.equal(
     isAcceptableAddressFeature({ ...good, place_type: ['place'] }, 'Cary'),
     false,
   )
   assert.equal(
-    isAcceptableAddressFeature({ ...good, relevance: 0.89 }, 'Cary'),
+    isAcceptableAddressFeature({ ...good, relevance: 0.7 }, 'Cary'),
     false,
   )
   assert.equal(
     isAcceptableAddressFeature({ ...good, place_name: '100 Main Street, Durham, NC' }, 'Cary'),
     false,
   )
-  assert.equal(ADDRESS_MIN_RELEVANCE, 0.9)
+  assert.equal(ADDRESS_MIN_RELEVANCE, 0.82)
 })
 
 test('rejection message for approximate matches', () => {
@@ -97,7 +101,7 @@ test('suggestAddresses uses /api/geocode autocomplete and caps at five', async (
     assert.equal(tokenMissing, false)
     assert.equal(suggestions.length, ADDRESS_MAX_SUGGESTIONS)
     assert.ok(suggestions.every((row) => row.featureType === 'address'))
-    assert.ok(suggestions.every((row) => row.relevance >= 0.9))
+    assert.ok(suggestions.every((row) => row.relevance >= ADDRESS_MIN_RELEVANCE))
     assert.ok(suggestions.every((row) => row.city === 'Cary'))
   } finally {
     setAddressFetchForTests(null)
@@ -109,7 +113,9 @@ test('suggestAddresses reports missing Mapbox on the API', async () => {
   setAddressFetchForTests(async () => new Response(JSON.stringify({ detail: 'missing' }), { status: 503 }))
   try {
     const result = await suggestAddresses('100 Main', 'Cary')
-    assert.deepEqual(result, { suggestions: [], tokenMissing: true })
+    assert.equal(result.tokenMissing, true)
+    assert.equal(result.suggestions.length, 0)
+    assert.equal(result.authRequired, false)
   } finally {
     setAddressFetchForTests(null)
   }
@@ -126,7 +132,10 @@ test('suggestAddresses sends Clerk auth so /api/geocode is not 401', async () =>
   try {
     const result = await suggestAddresses('5110 Red Alder Ln', 'Charlotte')
     assert.equal(sawAuth, true)
-    assert.deepEqual(result, { suggestions: [], tokenMissing: false })
+    assert.equal(result.tokenMissing, false)
+    assert.equal(result.authRequired, true)
+    assert.equal(result.suggestions.length, 0)
+    assert.match(result.error, /sign in again/i)
   } finally {
     setAddressFetchForTests(null)
     setAuthTokenProvider(async () => null)

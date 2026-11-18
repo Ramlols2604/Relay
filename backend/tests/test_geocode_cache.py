@@ -125,7 +125,8 @@ def test_geocode_rate_limit_returns_429(client, monkeypatch):
         return {"features": [CARY_FEATURE]}
 
     with session_scope() as session:
-        for index in range(RATE_LIMIT):
+        # Suggest with a city costs 2 (city proximity + address). Fill the window.
+        for index in range(RATE_LIMIT // 2):
             geocode_suggest(
                 session,
                 query=f"10{index} Rate Street",

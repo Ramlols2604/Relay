@@ -1019,6 +1019,14 @@
     flex-direction: column;
     min-height: 0;
     overflow: hidden;
+    padding-bottom: calc(5.75rem + env(safe-area-inset-bottom, 0px));
+  }
+
+  @media (min-width: 960px) {
+    .app-shell:has(.chat-page) .page-canvas,
+    .app-shell:has(.hood-page) .page-canvas {
+      padding-bottom: 0;
+    }
   }
 
   .page-canvas > * {
@@ -3864,13 +3872,19 @@
     z-index: 5;
     display: grid;
     gap: 0.65rem;
-    margin-top: -1.1rem;
+    margin-top: 0;
     border-radius: 1.25rem 1.25rem 0.9rem 0.9rem;
-    padding: 0.35rem 0.85rem 0.9rem;
+    padding: 0.35rem 0.85rem calc(0.9rem + env(safe-area-inset-bottom, 0px));
     box-shadow:
       0 -10px 28px color-mix(in srgb, var(--relay-color-sky-700) 14%, transparent),
       inset 0 1px 0 color-mix(in srgb, white 80%, transparent);
     transition: padding 220ms ease;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .hood-sheet {
+      transition: none;
+    }
   }
 
   .hood-sheet-expanded {
@@ -5245,15 +5259,19 @@
 .profile-edit-backdrop {
   position: fixed;
   inset: 0;
-  z-index: 200;
+  z-index: 400;
   display: grid;
   place-items: center;
-  padding: 1rem;
+  padding: max(1rem, env(safe-area-inset-top, 0px)) 1rem max(1rem, env(safe-area-inset-bottom, 0px));
   background: #0b2a3340;
   overscroll-behavior: none;
+  -webkit-backdrop-filter: blur(6px);
+  backdrop-filter: blur(6px);
 }
 .profile-edit-card {
-  width: min(100%, 22rem);
+  width: min(100%, 24rem);
+  max-height: min(92svh, 40rem);
+  overflow: auto;
   display: grid;
   gap: 0.75rem;
   padding: 1.25rem;

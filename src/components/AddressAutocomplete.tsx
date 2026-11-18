@@ -58,21 +58,17 @@ export function AddressAutocomplete({
             setTokenMissing(true)
             onGeocoderUnavailable?.()
             setSuggestions([])
-            setLookupNote('')
+            setLookupNote(result.error || '')
             return
           }
           setSuggestions(result.suggestions)
           setOpen(result.suggestions.length > 0)
-          setLookupNote(
-            result.suggestions.length === 0
-              ? "We couldn't find that exact address. Check the street number and spelling."
-              : '',
-          )
+          setLookupNote(result.error)
         })
         .catch(() => {
           if (id !== requestId.current) return
           setSuggestions([])
-          setLookupNote("We couldn't find that exact address. Check the street number and spelling.")
+          setLookupNote("We couldn't look up that address right now. Try again.")
         })
         .finally(() => {
           if (id === requestId.current) setLooking(false)

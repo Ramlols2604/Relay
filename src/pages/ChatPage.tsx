@@ -47,26 +47,36 @@ import { sameCity } from '../data/cityMatch.ts'
 const chatDraftKey = (shelfId: string) => `relay:chat:draft:${shelfId}`
 const chatTranscriptKey = (shelfId: string) => `relay:chat:transcript:${shelfId}`
 
-function readSession<T>(key: string): T | null {
+function readChatStore<T>(key: string): T | null {
   try {
-    const raw = sessionStorage.getItem(key)
+    const raw = localStorage.getItem(key) ?? sessionStorage.getItem(key)
     if (!raw) return null
+    // Migrate older session-only transcripts into localStorage so they survive reloads.
+    if (!localStorage.getItem(key) && sessionStorage.getItem(key)) {
+      localStorage.setItem(key, raw)
+    }
     return JSON.parse(raw) as T
   } catch {
     return null
   }
 }
 
-function writeSession(key: string, value: unknown): void {
+function writeChatStore(key: string, value: unknown): void {
+  const body = JSON.stringify(value)
   try {
-    sessionStorage.setItem(key, JSON.stringify(value))
+    localStorage.setItem(key, body)
+  } catch {
+    /* private browsing / quota */
+  }
+  try {
+    sessionStorage.setItem(key, body)
   } catch {
     /* private browsing / quota */
   }
 }
 
 function restoreMessages(shelfId: string): ChatMessage[] {
-  const saved = readSession<ChatMessage[]>(chatTranscriptKey(shelfId))
+  const saved = readChatStore<ChatMessage[]>(chatTranscriptKey(shelfId))
   if (!Array.isArray(saved)) return []
   // Drop in-flight "thinking" bubbles so a refresh does not leave them stuck.
   return saved.filter(
@@ -114,7 +124,7 @@ export function ChatPage() {
   const [messages, setMessages] = useState<ChatMessage[]>(() => restoreMessages(shelfId))
   const [searchParams, setSearchParams] = useSearchParams()
   const draftParam = searchParams.get('draft')
-  const [draft, setDraft] = useState(() => draftParam ?? readSession<string>(chatDraftKey(shelfId)) ?? '')
+  const [draft, setDraft] = useState(() => draftParam ?? readChatStore<string>(chatDraftKey(shelfId)) ?? '')
   const [appliedDraftParam, setAppliedDraftParam] = useState<string | null>(null)
   const [editing, setEditing] = useState(false)
   const [hasRealNeighbors, setHasRealNeighbors] = useState(false)
@@ -150,11 +160,11 @@ export function ChatPage() {
   }, [appliedDraftParam])
 
   useEffect(() => {
-    writeSession(chatDraftKey(shelfId), draft)
+    writeChatStore(chatDraftKey(shelfId), draft)
   }, [draft, shelfId])
 
   useEffect(() => {
-    writeSession(chatTranscriptKey(shelfId), messages)
+    writeChatStore(chatTranscriptKey(shelfId), messages)
   }, [messages, shelfId])
 
   useEffect(() => {
@@ -239,8 +249,8 @@ export function ChatPage() {
     setEditing(false)
     setMessages([])
     setDraft('')
-    writeSession(chatTranscriptKey(shelfId), [])
-    writeSession(chatDraftKey(shelfId), '')
+    writeChatStore(chatTranscriptKey(shelfId), [])
+    writeChatStore(chatDraftKey(shelfId), '')
     inputRef.current?.focus()
   }
 

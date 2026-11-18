@@ -143,7 +143,9 @@ def geocode_suggest(
     if len(q) < 4:
         return {"features": [], "cache_hit": True}
     search = ", ".join(part for part in (q, city.strip(), "United States") if part)
-    key = cache_key("suggest", search, city=city, types="address")
+    # v2: city-biased proximity. Older "suggest" keys used Triangle-only bias and
+    # wrongly cached empty/low-quality results for cities like Charlotte.
+    key = cache_key("suggest_v2", search, city=city, types="address")
     cached = _get_fresh(session, key)
     if cached is not None:
         _bump(session, COUNTER_HITS)
@@ -157,14 +159,33 @@ def geocode_suggest(
             detail="Mapbox is not configured on the API. Set MAPBOX_ACCESS_TOKEN.",
         )
 
-    _consume_rate(session, actor_id, cost=1)
+    _consume_rate(session, actor_id, cost=2 if city.strip() else 1)
     fetch = fetch_mapbox or (lambda url: _http_get_json(url))
+
+    # Bias suggestions to the typed city (same idea as geocode_center). Triangle
+    # fallback alone made Charlotte / other cities look like "address not found".
+    city_center = None
+    if city.strip():
+        city_features = _mapbox_features(
+            fetch,
+            token,
+            f"{city.strip()}, United States",
+            types="place,locality",
+            proximity=FALLBACK_PROXIMITY,
+            limit=1,
+        )
+        city_center = _pick_center(city_features, city) or None
+        _bump(session, COUNTER_CALLS)
+
+    proximity = (
+        (city_center["longitude"], city_center["latitude"]) if city_center else FALLBACK_PROXIMITY
+    )
     features = _mapbox_features(
         fetch,
         token,
         search,
         types="address",
-        proximity=FALLBACK_PROXIMITY,
+        proximity=proximity,
         limit=limit,
         autocomplete=True,
     )
@@ -285,6 +306,40 @@ def _stub_response(url: str) -> dict[str, Any]:
                     "center": [-78.7811, 35.7915],
                     "context": [
                         {"id": "place.cary", "text": "Cary"},
+                        {"id": "region.nc", "text": "North Carolina", "short_code": "US-NC"},
+                    ],
+                }
+            ]
+        }
+    if "rebecca bailey" in decoded:
+        return {
+            "features": [
+                {
+                    "id": "address.rebecca",
+                    "place_type": ["address"],
+                    "relevance": 0.96,
+                    "place_name": "907 Rebecca Bailey Drive, Charlotte, North Carolina 28213, United States",
+                    "text": "Rebecca Bailey Drive",
+                    "address": "907",
+                    "center": [-80.743, 35.287],
+                    "context": [
+                        {"id": "place.charlotte", "text": "Charlotte"},
+                        {"id": "region.nc", "text": "North Carolina", "short_code": "US-NC"},
+                    ],
+                }
+            ]
+        }
+    if decoded.endswith("charlotte, united states") or "types=place,locality" in decoded and "charlotte" in decoded:
+        return {
+            "features": [
+                {
+                    "id": "place.charlotte",
+                    "place_type": ["place"],
+                    "relevance": 1,
+                    "place_name": "Charlotte, North Carolina, United States",
+                    "text": "Charlotte",
+                    "center": [-80.8431, 35.2271],
+                    "context": [
                         {"id": "region.nc", "text": "North Carolina", "short_code": "US-NC"},
                     ],
                 }

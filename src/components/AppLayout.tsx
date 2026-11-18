@@ -34,6 +34,9 @@ export function AppLayout() {
   const resident = useCurrentResident()
   const label = placeLabel(resident.street, resident.city, Boolean(resident.id))
   const showVerifyBanner = Boolean(resident.id) && resident.onboarded && !resident.addressVerified
+  // Keep edit state on the shell so resizing across the mobile/desktop breakpoint
+  // (which swaps ResidentCard instances) cannot unmount the modal mid-edit.
+  const [editingProfile, setEditingProfile] = useState(false)
 
   const location = useLocation()
   const mapHome =
@@ -56,7 +59,7 @@ export function AppLayout() {
           ) : null}
           <PrimaryNav layout="side" />
           <div className="sidebar-foot">
-            <ResidentCard />
+            <ResidentCard onEditProfile={() => setEditingProfile(true)} />
           </div>
         </aside>
         <div className="app-main">
@@ -64,7 +67,7 @@ export function AppLayout() {
             <ShellAero idPrefix="mobile-chrome" />
             <div className="mobile-bar">
               <Wordmark compact />
-              <ResidentCard compact />
+              <ResidentCard compact onEditProfile={() => setEditingProfile(true)} />
             </div>
             {label && !mapHome ? (
               <p className="mobile-place-label" title={label}>
@@ -83,6 +86,27 @@ export function AppLayout() {
           </main>
         </div>
       </div>
+      {editingProfile && resident.id
+        ? createPortal(
+            <EditProfileForm
+              residentId={resident.id}
+              street={resident.street}
+              city={resident.city}
+              about={resident.about}
+              addressVerified={resident.addressVerified}
+              formattedAddress={resident.formattedAddress}
+              state={resident.state}
+              latitude={resident.latitude}
+              longitude={resident.longitude}
+              onClose={() => setEditingProfile(false)}
+              onSaved={async () => {
+                await resident.refreshProfile()
+                setEditingProfile(false)
+              }}
+            />,
+            document.body,
+          )
+        : null}
     </div>
   )
 }
@@ -232,9 +256,14 @@ function PrimaryNav({ layout }: { layout: 'side' | 'dock' }) {
   )
 }
 
-function ResidentCard({ compact = false }: { compact?: boolean }) {
+function ResidentCard({
+  compact = false,
+  onEditProfile,
+}: {
+  compact?: boolean
+  onEditProfile: () => void
+}) {
   const resident = useCurrentResident()
-  const [editing, setEditing] = useState(false)
 
   return (
     <div className={compact ? 'resident resident-compact' : 'resident'}>
@@ -245,32 +274,11 @@ function ResidentCard({ compact = false }: { compact?: boolean }) {
         </span>
         {compact ? <span className="sr-only">{resident.name}</span> : null}
         {resident.id ? (
-          <button type="button" className="resident-edit" onClick={() => setEditing(true)}>
+          <button type="button" className="resident-edit" onClick={onEditProfile}>
             Edit profile
           </button>
         ) : null}
       </span>
-      {editing && resident.id
-        ? createPortal(
-            <EditProfileForm
-              residentId={resident.id}
-              street={resident.street}
-              city={resident.city}
-              about={resident.about}
-              addressVerified={resident.addressVerified}
-              formattedAddress={resident.formattedAddress}
-              state={resident.state}
-              latitude={resident.latitude}
-              longitude={resident.longitude}
-              onClose={() => setEditing(false)}
-              onSaved={async () => {
-                await resident.refreshProfile()
-                setEditing(false)
-              }}
-            />,
-            document.body,
-          )
-        : null}
     </div>
   )
 }
@@ -373,10 +381,21 @@ function EditProfileForm({
   }
 
   return (
-    <div className="profile-edit-backdrop" role="presentation" onClick={onClose}>
+    <div
+      className="profile-edit-backdrop"
+      role="presentation"
+      onMouseDown={(event) => {
+        // Only dismiss when the backdrop itself is pressed — not when a mobile
+        // keyboard hide or suggestion click lands on a child then bubbles.
+        if (event.target === event.currentTarget) onClose()
+      }}
+    >
       <form
         className="profile-edit-card"
         aria-labelledby={titleId}
+        aria-modal="true"
+        role="dialog"
+        onMouseDown={(event) => event.stopPropagation()}
         onClick={(event) => event.stopPropagation()}
         onSubmit={(event) => void submit(event)}
       >

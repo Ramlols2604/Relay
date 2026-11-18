@@ -171,8 +171,8 @@ def test_ensure_sample_listings_seeds_bootstrap_count_once_when_empty(client):
         assert sample_listing_count(session) == 50
 
 
-def test_ensure_sample_listings_does_not_top_up_when_non_empty(client):
-    """Startup bootstrap only fires on an empty table — it must never top up to TARGET_COUNT."""
+def test_ensure_sample_listings_tops_up_when_below_requested_count(client):
+    """Startup tops up a thin table to the requested bootstrap floor, not TARGET_COUNT."""
     from app.sample_listings import ensure_sample_listings
 
     with session_scope() as session:
@@ -196,13 +196,12 @@ def test_ensure_sample_listings_does_not_top_up_when_non_empty(client):
             ],
         )
         assert sample_listing_count(session) == 1
-        # Even though 1 < BOOTSTRAP_COUNT and 1 < TARGET_COUNT, a non-empty table is left alone.
         written = ensure_sample_listings(session, count=50)
-        assert written == 0
-        assert sample_listing_count(session) == 1
-        # Restore a bootstrap set so later API checks still see samples.
-        replace_sample_listings(session, [])
-        ensure_sample_listings(session, count=50)
+        assert written == 50
+        assert sample_listing_count(session) == 50
+        # Already at the floor — leave alone (never expands to TARGET_COUNT here).
+        assert ensure_sample_listings(session, count=50) == 0
+        assert sample_listing_count(session) == 50
 
 
 def test_sample_ids_never_appear_in_admin_people(client):

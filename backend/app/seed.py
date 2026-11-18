@@ -161,11 +161,24 @@ NEIGHBORS = (
 EXTRA_INVENTORY = (
     {"resident_id": "luis", "resident_name": "Luis Alvarez", "x": 7, "y": 3, "catalog_item": "Garden hose", "quantity": 1, "willing_to_lend": True, "condition_note": "50 ft, brass fittings"},
     {"resident_id": "luis", "resident_name": "Luis Alvarez", "x": 7, "y": 3, "catalog_item": "Soccer ball", "quantity": 2, "willing_to_lend": True, "condition_note": "Size 5, one scuffed"},
+    {"resident_id": "luis", "resident_name": "Luis Alvarez", "x": 7, "y": 3, "catalog_item": "Ladder", "quantity": 1, "willing_to_lend": True, "condition_note": "16 ft extension"},
     {"resident_id": "nia", "resident_name": "Nia Patel", "x": 2, "y": 5, "catalog_item": "Folding table", "quantity": 1, "willing_to_lend": True, "condition_note": "6 ft, seats eight"},
     {"resident_id": "nia", "resident_name": "Nia Patel", "x": 2, "y": 5, "catalog_item": "Mixing bowl", "quantity": 3, "willing_to_lend": True, "condition_note": "Stainless, nested set"},
+    {"resident_id": "nia", "resident_name": "Nia Patel", "x": 2, "y": 5, "catalog_item": "Chair", "quantity": 4, "willing_to_lend": True, "condition_note": "Folding, for events"},
     {"resident_id": "owen", "resident_name": "Owen Blake", "x": 1, "y": 2, "catalog_item": "Extension cord", "quantity": 1, "willing_to_lend": True, "condition_note": "25 ft, outdoor rated"},
     {"resident_id": "owen", "resident_name": "Owen Blake", "x": 1, "y": 2, "catalog_item": "Hedge trimmer", "quantity": 1, "willing_to_lend": True, "condition_note": "Corded, sharp"},
+    # Leave Drill unowned so the shared-purchase / group-buy demo still works.
     {"resident_id": "maya", "resident_name": "Maya Chen", "x": 1, "y": 4, "catalog_item": "Garden hose", "quantity": 1, "willing_to_lend": True, "condition_note": "25 ft, nozzle included"},
+    {"resident_id": "maya", "resident_name": "Maya Chen", "x": 1, "y": 4, "catalog_item": "Wagon", "quantity": 1, "willing_to_lend": True, "condition_note": "Steel tray"},
+    {"resident_id": "chris", "resident_name": "Chris Nguyen", "x": 4, "y": 1, "catalog_item": "Saw", "quantity": 1, "willing_to_lend": True, "condition_note": "Circular, blade sharp"},
+    {"resident_id": "chris", "resident_name": "Chris Nguyen", "x": 4, "y": 1, "catalog_item": "Level", "quantity": 2, "willing_to_lend": True, "condition_note": "24 in and 48 in"},
+    {"resident_id": "priya", "resident_name": "Priya Shah", "x": 6, "y": 4, "catalog_item": "Ladder", "quantity": 1, "willing_to_lend": True, "condition_note": "Step ladder, 6 ft"},
+    {"resident_id": "priya", "resident_name": "Priya Shah", "x": 6, "y": 4, "catalog_item": "Clamps", "quantity": 4, "willing_to_lend": True, "condition_note": "Bar clamps"},
+    {"resident_id": "elena", "resident_name": "Elena Brooks", "x": 8, "y": 2, "catalog_item": "Tape measure", "quantity": 2, "willing_to_lend": True, "condition_note": "25 ft"},
+    {"resident_id": "elena", "resident_name": "Elena Brooks", "x": 8, "y": 2, "catalog_item": "Sander", "quantity": 1, "willing_to_lend": True, "condition_note": "Orbital, dust bag"},
+    {"resident_id": "jordan", "resident_name": "Jordan Lee", "x": 2, "y": 1, "catalog_item": "Ladder", "quantity": 1, "willing_to_lend": True, "condition_note": "Extension, 20 ft"},
+    {"resident_id": "sam", "resident_name": "Sam Ortiz", "x": 3, "y": 3, "catalog_item": "Chair", "quantity": 6, "willing_to_lend": True, "condition_note": "Patio set"},
+    {"resident_id": "riley", "resident_name": "Riley Park", "x": 5, "y": 2, "catalog_item": "Notebooks", "quantity": 20, "willing_to_lend": True, "condition_note": "College ruled"},
 )
 
 
@@ -226,6 +239,7 @@ def seed(session: Session) -> None:
             )
     session.commit()
     _seed_stock(session)
+    _ensure_extra_inventory_rows(session)
 
 
 def _verified_fields_for(person: dict) -> dict:
@@ -295,6 +309,31 @@ def _seed_stock(session: Session) -> None:
         ]
     )
     session.commit()
+
+
+def _ensure_extra_inventory_rows(session: Session) -> None:
+    """Idempotently add named-neighbor stock so the map/chat always have lendable items."""
+    added = 0
+    for row in EXTRA_INVENTORY:
+        stock_id = f"{row['resident_id']}:{row['catalog_item']}"
+        if session.get(StockRow, stock_id) is not None:
+            continue
+        session.add(
+            StockRow(
+                id=stock_id,
+                resident_id=row["resident_id"],
+                resident_name=row["resident_name"],
+                x=row["x"],
+                y=row["y"],
+                catalog_item=row["catalog_item"],
+                quantity=row["quantity"],
+                willing_to_lend=row["willing_to_lend"],
+                condition_note=row["condition_note"],
+            )
+        )
+        added += 1
+    if added:
+        session.commit()
 
 
 def ensure_extra_inventory() -> None:
